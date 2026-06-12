@@ -1,9 +1,10 @@
 ---
 name: doc-fact-check
 description: >
-  文档表述准确性核对。将目标文档中的每条定性与定量表述与参考文档逐一比对，
+  文档表述准确性核对（v3）。将目标文档中的每条定性与定量表述与参考文档逐一比对，
+  自动分解复合表述为独立子命题、提取专有实体名称并逐项验证，
   通过自动初查→人工复检→反向验证三轮闭环，标记确认/不一致/未找到等状态，
-  生成带颜色标注的Excel核对清单。
+  生成带颜色标注的Excel核对清单（含实体覆盖分析工作表）。
   Use when the user needs to verify a summary/promotional document against
   reference documents, fact-check statements, or generate a compliance checklist.
 ---
@@ -15,9 +16,16 @@ description: >
 将一份**目标文档**（如宣传稿、总结、汇报、新闻稿）中的每条定性和定量表述，
 与一组**参考文档**（如规划、总结、专项报告）逐一比对，通过三轮复核确保准确。
 
+**v3 新增能力：**
+- **复合表述分解**：自动将"A入选X，B获批Y"拆分为独立子命题，分别验证
+- **实体覆盖检查**：提取句内专有名词（引号/书名号内文本、实验室/项目/平台名称），
+  检查参考文档中是否出现同名实体，防止张冠李戴
+- **子命题独立评分**：任一子命题无出处则整体降级
+- **.doc 文件自动回退**：macOS 上用 textutil 自动转换
+
 ```
-第一轮：自动关键词匹配 ──→ 初步结果（含误判风险）
-   │
+第一轮：自动关键词匹配 + 子命题分解 + 实体覆盖
+   │  （自动拆分复合表述、提取实体、分别验证）
    ▼
 第二轮：人工复查「未找到」项 ──→ 找回遗漏匹配
    │
@@ -63,13 +71,15 @@ python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" "核
 - `txt_output/` 目录下的参考文档 txt 和目标文档 txt
 - `txt_output/checklist_result.json` — 第一轮初步结果
 - `txt_output/checklist_reverse_check.json` — 反向验证辅助报告
-- `核对清单.xlsx` — 4个工作表
+- `核对清单.xlsx` — 5个工作表（含实体覆盖分析）
 
 **⚠️ 自动匹配的局限（需要后续两轮人工复核）：**
 1. 关键词碰巧出现在无关段落（如"100万"→网络设备参数而非科研经费）
 2. 不同项目/机构因共有词被混为一谈
 3. 基数数字匹配但增长率未能独立验证
 4. 统计口径不一致导致张冠李戴（如"省部级平台"≠"国家级平台"）
+5. **复合表述部分匹配**（v3可自动检测）：如"A入选X项目 + B获批Y实验室"，仅后半句匹配即标✓
+6. **实体名称张冠李戴**（v3可自动检测）：如将归属A项目的荣誉误放到B项目上
 
 ---
 
@@ -210,11 +220,40 @@ for i, item in enumerate([x for x in data if "未找到" in x["状态"] or "△"
     ws3.append([i, item["类型"], item["表述内容"], item["状态"], item["原文片段"]])
     fill_cell(ws3, i+1, 4, item["状态"])
 
-# Sheet 4: 数据不一致重点条目
-ws4 = wb.create_sheet("数据不一致重点条目")
-ws4.append(["序号", "类型", "表述内容", "差异说明"])
-for i, item in enumerate([x for x in data if "数据不一致" in x["状态"]], 1):
-    ws4.append([i, item["类型"], item["表述内容"], item["原文片段"]])
+# Sheet 4: 反向验证重点关注
+ws4 = wb.create_sheet("反向验证重点关注（第三轮）")
+ws4.append(["序号", "类型", "表述内容", "当前状态", "命中数字", "匹配关键词", "反向验证警告"])
+for i, item in enumerate([x for x in data if x.get("反向验证警告", "")], 1):
+    ws4.append([i, item["类型"], item["表述内容"], item["状态"],
+                ", ".join(item.get("命中数字", [])),
+                item.get("匹配关键词", ""),
+                item["反向验证警告"]])
+    ws4.cell(row=i+1, column=7).fill = yellow
+
+# Sheet 5: 实体覆盖分析（v3新增）
+ws5 = wb.create_sheet("实体覆盖分析")
+ws5.append(["序号", "表述内容", "提取的实体", "匹配状态", "实体覆盖情况"])
+for i, item in enumerate([x for x in data if x.get("命中实体", [])], 1):
+    ws5.append([
+        i, item["表述内容"][:80],
+        ", ".join(item.get("命中实体", [])),
+        item["状态"],
+        _build_entity_note(item.get("反向验证警告", ""))
+    ])
+    cell = ws5.cell(row=i+1, column=4)
+    if "✓" in item["状态"]:         cell.fill = green
+    elif "数据不一致" in item["状态"]: cell.fill = orange
+    elif "△" in item["状态"]:       cell.fill = yellow
+    elif "未找到" in item["状态"]:   cell.fill = red
+
+def _build_entity_note(warnings):
+    if not warnings: return "✓ 全部覆盖"
+    if "实体覆盖率" in warnings:
+        import re
+        m = re.search(r'实体覆盖率(\d+)%', warnings)
+        pct = f" ({m.group(1)}%)" if m else ""
+        return f"⚠ 实体覆盖不足{pct}，需人工核对"
+    return "—"
 
 ws1.column_dimensions['C'].width = 55
 ws1.column_dimensions['D'].width = 18
@@ -272,6 +311,7 @@ wb.save("核对清单.xlsx")
 | 一条表述含 2+ 数字 | 每个数字都要独立验证 |
 | 表述中有增长率/增幅 | 增长率必须去参考文档中单独找到，基数对≠增长率对 |
 | 名称/机构/项目名 | 与参考文档中找到的名称逐字比对 |
+| **表述含多个并列实体** | "A入选X项目，获批B实验室"→可能仅B匹配但A不匹配，需拆开分别验证 |
 
 ---
 
@@ -282,4 +322,4 @@ wb.save("核对清单.xlsx")
 - 目标文档和参考文档的 docx 如有修订标记（Track Changes），需先接受修订后转换
 - 脚本的自动匹配基于关键词检索，**不要仅凭第一轮结果下结论**，必须走完三轮
 - `--regenerate` 模式假设 txt 文件已存在，如需重新转换请删除 `txt_output/` 后重跑
-- `.doc` 格式文件（旧版 Word）目前已支持，但 pandoc 转换效果可能不如 `.docx`
+- `.doc` 格式文件（旧版 Word）v3 已支持，macOS 上用 textutil 自动转换为 .docx 后再转换
