@@ -362,6 +362,72 @@ def verify_entity_coverage(entities, all_ref_contents):
     return coverage, uncovered
 
 
+def verify_entity_context_cooccurrence(entities, matched_kw, references, context_radius=300):
+    """
+    v3.1 新增：实体-语境共现验证。
+
+    仅检查实体字符串是否存在是不够的——实体必须与匹配关键词出现在同一语境中。
+    例如：目标文档说"金融大模型实验室入选两重项目"，
+    关键词"两重"在参考文档中匹配了，实体"金融大模型实验室"也存在于参考文档中，
+    但它们在参考文档中从未在同一段落出现——这是张冠李戴。
+
+    参数：
+    - entities: 目标表述中的专有名词列表
+    - matched_kw: 触发匹配的关键词
+    - references: list of (ref_name, ref_content)
+    - context_radius: 共现窗口大小（字符数）
+
+    返回：
+    - misattributed: list of (entity, ref_name_where_found_but_not_near_kw)
+      实体在参考文档中存在但不在关键词附近的列表
+    - cooccurring: list of entity 与关键词共现的实体
+    """
+    if not entities or not matched_kw:
+        return [], list(entities)
+
+    misattributed = []
+    cooccurring = []
+
+    for entity in entities:
+        if entity == matched_kw:
+            cooccurring.append(entity)
+            continue
+
+        entity_found_anywhere = False
+        entity_near_kw = False
+        found_in_ref = ""
+
+        for ref_name, ref_content in references:
+            if entity in ref_content:
+                entity_found_anywhere = True
+                if not found_in_ref:
+                    found_in_ref = ref_name
+
+            # 检查实体是否与关键词在同一语境中共现
+            if entity in ref_content and matched_kw in ref_content:
+                # 找到实体和关键词在参考文档中最近的位置
+                kw_positions = [m.start() for m in re.finditer(re.escape(matched_kw), ref_content)]
+                entity_positions = [m.start() for m in re.finditer(re.escape(entity), ref_content)]
+                for ep in entity_positions:
+                    for kp in kw_positions:
+                        if abs(ep - kp) <= context_radius:
+                            entity_near_kw = True
+                            break
+                    if entity_near_kw:
+                        break
+
+        if entity_near_kw:
+            cooccurring.append(entity)
+        elif entity_found_anywhere:
+            # 实体存在但不与关键词共现——张冠李戴风险
+            misattributed.append((entity, found_in_ref))
+        else:
+            # 实体完全不存在——已有 verify_entity_coverage 处理
+            cooccurring.append(entity)  # 不在 misattributed 里，由 coverage 负责
+
+    return misattributed, cooccurring
+
+
 def search_in_reference(texts, references):
     """
     增强版全文检索：
@@ -436,6 +502,28 @@ def search_in_reference(texts, references):
                 warnings.append(entity_warning)
                 if coverage < 50 and len(all_entities) >= 2:
                     if "\u2713" in item["状态"]:
+                        item["状态"] = "\u25b3 \u6570\u636e\u4e0d\u4e00\u81f4"
+
+            # === v3.1: 实体-语境共现验证 ===
+            # 即使实体覆盖率100%，也需检查实体是否与匹配关键词在同一语境
+            if matched_kw:
+                misattributed, cooccurring = verify_entity_context_cooccurrence(
+                    all_entities, matched_kw, references
+                )
+                if misattributed:
+                    # 有实体存在于参考文档中，但不与匹配关键词共现
+                    mis_names = [f"{e}(仅见于{ref[:20]}，非'{matched_kw}'语境)"
+                                 for e, ref in misattributed]
+                    entity_ctx_warning = (
+                        f"⚠ 实体-语境不匹配: {', '.join(mis_names)}。"
+                        f"关键词'{matched_kw}'匹配成功，但这些实体在参考文档中"
+                        f"从不与'{matched_kw}'在同一语境中出现，可能张冠李戴"
+                    )
+                    warnings.append(entity_ctx_warning)
+                    # 关键实体不共现 → 直接降级为数据不一致
+                    # 只要有任何实体被张冠李戴（不少于1个且不是仅关键词本身），就降级
+                    non_kw_mis = [(e, r) for e, r in misattributed if e != matched_kw]
+                    if "\u2713" in item.get("状态", "") and len(non_kw_mis) >= 1:
                         item["状态"] = "\u25b3 \u6570\u636e\u4e0d\u4e00\u81f4"
 
         # === 原有检查 ===
