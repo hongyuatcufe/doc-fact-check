@@ -401,7 +401,8 @@ def verify_entity_context_cooccurrence(entities, matched_kw, references, context
             if entity in ref_content:
                 entity_found_anywhere = True
                 if not found_in_ref:
-                    found_in_ref = ref_name
+                    # 用文件名（去路径和扩展名）作为标识
+                    found_in_ref = os.path.splitext(os.path.basename(ref_name))[0]
 
             # 检查实体是否与关键词在同一语境中共现
             if entity in ref_content and matched_kw in ref_content:
@@ -512,7 +513,7 @@ def search_in_reference(texts, references):
                 )
                 if misattributed:
                     # 有实体存在于参考文档中，但不与匹配关键词共现
-                    mis_names = [f"{e}(仅见于{ref[:20]}，非'{matched_kw}'语境)"
+                    mis_names = [f"{e}(仅见于{ref[:30]}，非'{matched_kw}'语境)"
                                  for e, ref in misattributed]
                     entity_ctx_warning = (
                         f"⚠ 实体-语境不匹配: {', '.join(mis_names)}。"
