@@ -33,6 +33,14 @@ import re
 import subprocess
 from pathlib import Path
 
+try:
+    import yaml
+except ImportError:
+    yaml = None  # 未安装 PyYAML 时回退到内置默认类别词
+
+# ①: 文档内一致性检查默认关闭（启发式误报率过高，详见 Step 3.5 注释）
+ENABLE_INTRA_DOC_CHECK = False
+
 
 # ── 工具函数 ──────────────────────────────────────────────
 
@@ -224,6 +232,10 @@ def extract_named_entities(text, category_patterns=None):
         for m in pat.findall(text):
             entities.append(m.strip())
 
+    # 过滤假实体：含句内标点的是整句话而非专名
+    PUNCT_FILTER = re.compile(r'[，、；。！？,;]')
+    entities = [e for e in entities if not PUNCT_FILTER.search(e)]
+
     # 去重，按长度降序
     seen = set()
     result = []
@@ -385,11 +397,11 @@ def extract_statements(main_txt_path):
             "反向验证警告": "",
         })
 
-    # 去重
+    # 去重（④: 用完整表述做键，避免开头30字相同的不同句被误删而漏检）
     seen = set()
     unique = []
     for s in statements:
-        key = s["表述内容"][:30]
+        key = s["表述内容"]
         if key not in seen:
             seen.add(key)
             unique.append(s)
@@ -477,7 +489,23 @@ def verify_sub_claims(sub_claims, references):
     match_flags = []
     details = []
 
+    # 有锚点的子命题才做独立出处检索：含数字、引号/书名号专名、或成就动词
+    _ACHIEVEMENT_VERBS = re.compile(
+        r'(获批|入选|获评|承担|建立|成立|设立|推出|完成|实现|'
+        r'签署|出版|发布|获得|荣获|入围|评为|被授予|被遴选|牵头)'
+    )
+    _HAS_ANCHOR = re.compile(
+        r'[\d０-９]|[《""“”]|'
+        r'(获批|入选|获评|承担|建立|成立|设立|推出|完成|实现|'
+        r'签署|出版|发布|获得|荣获|入围|评为|被授予|被遴选|牵头)'
+    )
+
     for sc in independent_claims:
+        # 无锚点的论述性子命题跳过，不产生"无独立出处"警告
+        if not _HAS_ANCHOR.search(sc["text"]):
+            match_flags.append(True)   # 视为通过，不拉低覆盖率
+            continue
+
         sub_kws = extract_keywords(sc["text"])
         sub_found = False
 
@@ -712,13 +740,44 @@ def search_in_reference(texts, references):
         if len(matched_kw) <= 3:
             warnings.append(f"匹配关键词过短({len(matched_kw)}字)，可能为误匹配，需人工确认上下文")
 
-        # 关键词过于通用检查
+        # 关键词过于通用检查（文档频率替代绝对次数，跨任务自适应）
         total_occurrences = sum(ref_content.count(matched_kw) for _, ref_content in references)
-        if total_occurrences > 20:
+        doc_freq = sum(1 for _, ref_content in references if matched_kw in ref_content)
+        total_docs = len(references)
+        # 出现在≥60%参考文档中 = 领域核心词，不报通用警告
+        is_domain_term = total_docs > 0 and (doc_freq / total_docs) >= 0.6
+        if total_occurrences > 20 and not is_domain_term:
             warnings.append(
-                f"匹配关键词\u300c{matched_kw}\u300d在参考文档中出现{total_occurrences}次，过于通用，"
+                f"匹配关键词\u300c{matched_kw}\u300d在参考文档中出现{total_occurrences}次"
+                f"（覆盖{doc_freq}/{total_docs}份文档），过于通用，"
                 f"请确认匹配到的上下文是否与目标表述一致"
             )
+
+        # === ④: 仅靠过短/高频通用词命中的「假✓」降级为「需核实」===
+        # 关键词命中即判✓是主要漏报来源：通用词碰巧出现就误判已确认。
+        # 若命中仅依赖短词或高频通用词，且无「数字命中」或「引号专名被覆盖」等强证据佐证，
+        # 则降级为需人工核实，避免静默假✓。
+        if "✓" in item.get("状态", ""):
+            kw_short = len(matched_kw) <= 3
+            # 领域核心词不触发降级，只有真正低区分度的通用词才降级
+            kw_generic = total_occurrences > 20 and not is_domain_term
+            strong_ok = False
+            if all_numbers and any(
+                    any(n in rc for _, rc in references) for n in all_numbers):
+                strong_ok = True
+            else:
+                quoted = re.findall(r'[“《"]([^”》"]{2,40})[”》"]', query)
+                if quoted and any(any(q in rc for _, rc in references) for q in quoted):
+                    strong_ok = True
+            if (kw_short or kw_generic) and not strong_ok:
+                item["状态"] = "△ 需核实"
+                reason = "/".join(filter(None, [
+                    "过短" if kw_short else "", "高频通用" if kw_generic else ""]))
+                warnings.append(
+                    f"仅靠{reason}关键词'{matched_kw}'命中、"
+                    f"无数字或引号专名佐证，"
+                    f"已自动降级为需核实（防止通用词假✓漏报）"
+                )
 
         item["反向验证警告"] = "; ".join(warnings) if warnings else ""
 
@@ -930,10 +989,15 @@ def cmd_full_check():
     search_in_reference(statements, ref_list)
 
     # Step 3.5: 文档内一致性检查（v3.2 新增）
+    # ①: 该启发式（±20字窗口内随机汉字串 Jaccard<0.3）与真矛盾基本无关，
+    # 在讲话稿等高复现度文本上几乎全是假警告（如"引进来/走出去""一流大学"），
+    # 反而淹没真信号、抬高漏看概率，故默认关闭。需要时设 ENABLE_INTRA_DOC_CHECK=True。
     print("\n" + "=" * 60)
     print("Step 3.5: 文档内一致性检查")
     print("=" * 60)
-    conflicts = check_intra_document_consistency(statements)
+    conflicts = check_intra_document_consistency(statements) if ENABLE_INTRA_DOC_CHECK else []
+    if not ENABLE_INTRA_DOC_CHECK:
+        print("  已默认禁用（误报率过高）。如需启用：ENABLE_INTRA_DOC_CHECK=True")
     if conflicts:
         print(f"发现 {len(conflicts)} 处潜在不一致：")
         for ent, seq_a, attrs_a, seq_b, attrs_b in conflicts:
@@ -953,7 +1017,7 @@ def cmd_full_check():
                             s["反向验证警告"] = existing + "; " + warning
                         else:
                             s["反向验证警告"] = warning
-    else:
+    elif ENABLE_INTRA_DOC_CHECK:
         print("  未发现文档内矛盾")
     print()
 
