@@ -8,9 +8,12 @@
 ### 特性
 
 - 🏷️ **复合表述分解**：自动将"A入选X，B获批Y"拆分为独立子命题分别验证
+- 🏷️ **通用类别词实体提取（v3.2）**：跨领域类别词（任务/试点/中心/体系/规划…）识别专有名词，
+  经 `scripts/entity_config.yaml` 配置，不再依赖领域专属尾缀
 - 🏷️ **实体-语境共现验证**：提取专有名词后检查其是否与匹配关键词在同一语境出现，防止张冠李戴
+- 🏷️ **假✓降级（v3.3）**：仅靠过短/高频通用词命中且无数字/专名佐证的"✓"自动降级为「△ 需核实」，防止静默假✓
 - 🔍 在参考文档中全文检索每条表述的出处，并辅以反向验证警告
-- 🏷️ 标记每条表述的状态：已确认 / 部分匹配 / 数据不一致 / 未找到
+- 🏷️ 标记每条表述的状态：已确认 / 需核实 / 部分匹配 / 数据不一致 / 未找到
 - 📊 输出带颜色标注的 Excel 核对清单（5 个工作表，含实体覆盖分析）
 - 🔄 支持 `--regenerate` 模式：人工修改 JSON 后直接重生成 Excel，无需重新转换
 - 📋 自动生成反向验证报告，标记潜在误匹配供第三轮重点关注
@@ -36,6 +39,7 @@
 ```bash
 brew install pandoc          # macOS
 pip install openpyxl
+pip install pyyaml           # 可选：加载 entity_config.yaml 类别词（缺失时回退内置默认）
 ```
 
 ### 使用方式
@@ -61,6 +65,7 @@ python3 scripts/doc_fact_check.py --regenerate txt_output/checklist_result.json 
 | 标记 | 含义 |
 |------|------|
 | ✓ 已确认 | 参考文档中有完全相同或高度一致的表述 |
+| △ 需核实 | 仅靠过短/高频通用词命中、缺强佐证，自动从「✓」降级，需人工确认（v3.3） |
 | △ 部分匹配 | 部分内容有出处但表述不完整 |
 | △ 数据不一致 | 数据或表述与原始文档有差异 |
 | ✗ 未找到 | 所有参照文档均未出现该表述 |
@@ -97,7 +102,9 @@ doc-fact-check/
 ├── README.md                     # 本文件
 ├── .gitignore
 ├── scripts/
-│   └── doc_fact_check.py         # 核对脚本（v3.1 实体-语境共现增强版）
+│   ├── doc_fact_check.py         # 核对脚本（v3.3 通用类别词 + 降噪增强版）
+│   ├── entity_config.yaml        # 通用类别词配置（跨领域，可扩展 education/medical/finance）
+│   └── add_category_words.py     # 类别词批量增补辅助脚本
 └── txt_output/                   # 中间输出（自动生成，可选纳入 .gitignore）
 ```
 
@@ -112,9 +119,11 @@ in a target document against reference documents through a **three-round review 
 ### Features
 
 - 🏷️ **Compound statement decomposition**: Automatically splits "A入选X，B获批Y" into independent sub-claims for separate verification
+- 🏷️ **Generic category-word entity extraction (v3.2)**: Cross-domain category words (task/pilot/center/system/plan…) identify named entities, configured via `scripts/entity_config.yaml`, no longer relying on domain-specific suffixes
 - 🏷️ **Entity-context co-occurrence check**: Verifies that named entities appear in the same context as matched keywords, preventing misattribution
+- 🏷️ **False-✓ downgrade (v3.3)**: A "✓" backed only by short/high-frequency generic keywords with no number/entity corroboration is auto-downgraded to "△ Needs Review", preventing silent false positives
 - 🔍 Full-text searches each statement's source across reference documents with reverse validation warnings
-- 🏷️ Status markers: Confirmed / Partial Match / Data Mismatch / Not Found
+- 🏷️ Status markers: Confirmed / Needs Review / Partial Match / Data Mismatch / Not Found
 - 📊 Color-coded Excel checklist with 5 worksheets (including entity coverage analysis)
 - 🔄 `--regenerate` mode for re-generating Excel from manually corrected JSON
 - 📋 Auto-generated reverse-validation report highlighting potential false positives
@@ -140,6 +149,7 @@ Final results
 ```bash
 brew install pandoc          # macOS
 pip install openpyxl
+pip install pyyaml           # 可选：加载 entity_config.yaml 类别词（缺失时回退内置默认）
 ```
 
 ### Usage
@@ -165,6 +175,7 @@ python3 scripts/doc_fact_check.py --regenerate txt_output/checklist_result.json 
 | Marker | Meaning |
 |--------|---------|
 | ✓ Confirmed | Exact or highly consistent match found in reference documents |
+| △ Needs Review | Matched only by short/high-frequency generic keywords without strong corroboration; auto-downgraded from "✓" (v3.3) |
 | △ Partial Match | Some content sourced but the statement is incomplete |
 | △ Data Mismatch | Data or wording differs from reference documents |
 | ✗ Not Found | Statement not found in any reference document |
@@ -189,7 +200,9 @@ doc-fact-check/
 ├── README.md                     # This file
 ├── .gitignore
 ├── scripts/
-│   └── doc_fact_check.py         # Fact-checking script (v3.1, entity-context co-occurrence enhanced)
+│   ├── doc_fact_check.py         # Fact-checking script (v3.3, generic category-word + noise-reduction enhanced)
+│   ├── entity_config.yaml        # Cross-domain category-word config (extensible: education/medical/finance)
+│   └── add_category_words.py     # Helper to batch-add category words
 └── txt_output/                   # Intermediate output (auto-generated, optionally in .gitignore)
 ```
 
