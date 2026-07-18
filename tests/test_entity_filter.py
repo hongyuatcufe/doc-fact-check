@@ -82,6 +82,62 @@ class TestIsValidEntity:
         assert D._is_valid_entity("《人工智能行动计划》") is True
 
 
+class TestIsValidEntityExtended:
+    """扩展规则：动词起头、第X阶段、超长无标题"""
+
+    # ── 应过滤 ────────────────────────────────────────────────
+    def test_filters_verb_goujian(self):
+        assert D._is_valid_entity("构建多层次人才育引体系") is False
+
+    def test_filters_verb_tansuo(self):
+        assert D._is_valid_entity("探索师资队伍建设") is False
+
+    def test_filters_verb_tuidong(self):
+        assert D._is_valid_entity("推动师德师风建设常态化") is False
+
+    def test_filters_verb_shishi(self):
+        assert D._is_valid_entity("实施零基预算改革") is False
+
+    def test_filters_verb_quanmian(self):
+        assert D._is_valid_entity("全面修订培养方案") is False
+
+    def test_filters_verb_wei_prep(self):
+        # "为各类实验班..." — 介词短语不是实体
+        assert D._is_valid_entity("为各类实验班及特色人才培养项目") is False
+
+    def test_filters_diyijieduan_fragment(self):
+        # "第一阶段是以..." — 阶段描述，不是具名实体
+        assert D._is_valid_entity("第一阶段是以新增学科与财经学科") is False
+
+    def test_filters_huigu_sentence(self):
+        # "回顾..." — 动词句开头
+        assert D._is_valid_entity("回顾中财大促进学科") is False
+
+    def test_filters_very_long_no_brackets(self):
+        # 超长（≥20字）且无《》标题符号 → 大概率是句子片段
+        assert D._is_valid_entity("中央财经大学始终把构建中国财经自主知识体系") is False
+
+    # ── 应保留 ────────────────────────────────────────────────
+    def test_keeps_program_name_with_number(self):
+        # "621人才工程" 含数字的计划名，应保留
+        assert D._is_valid_entity("621人才工程") is True
+
+    def test_keeps_short_verb_noun(self):
+        # "推进" 是动词但实体名称里可能包含，需按长度/结构区分
+        # "改革创新" (4字) 不是以动词起头的长句 → 保留
+        assert D._is_valid_entity("改革创新") is True
+
+    def test_keeps_wujiao_program(self):
+        assert D._is_valid_entity("五跨五融") is True
+
+    def test_keeps_quoted_program(self):
+        assert D._is_valid_entity('“双一流”建设') is True  # "双一流"建设
+
+    def test_keeps_long_document_with_brackets(self):
+        # 带《》的长文件名是合法实体
+        assert D._is_valid_entity("《普通高等学校教师党建和思想政治工作质量标准》") is True
+
+
 class TestEntityFilterAppliedInVerification:
     """验证过滤器在 search_in_reference 中实际生效。"""
 

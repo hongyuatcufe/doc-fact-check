@@ -527,14 +527,26 @@ def verify_sub_claims(sub_claims, references):
 
 
 _ORDINAL_PREFIX = re.compile(r'^[一二三四五六七八九十][是、]')
-_CONJUNCTION_PREFIX = re.compile(r'^(?:因此|所以|而且|并且|但是|然而|同时|此外|另外|不仅|其次)')
+_DIYIJIEDUAN_PREFIX = re.compile(r'^第[一二三四五六七八九十\d]阶')  # 第X阶段（不过滤第X批）
+_CONJUNCTION_PREFIX = re.compile(
+    r'^(?:因此|所以|而且|并且|但是|然而|同时|此外|另外|不仅|其次|回顾|纵观|综上)')
+# 动词/介词/副词开头的短语 → 大概率是句子片段，不是具名实体
+_VERB_PREFIX = re.compile(
+    r'^(?:构建|探索|推动|推进|实施|建设|完善|深化|加强|建立|持续|全面|系统'
+    r'|完成|开创|优化|整合|强化|提升|发展|创新|落实|推行|健全|开展'
+    r'|形成|确保|聚焦|坚持|促进|统筹|围绕|围绕|为了|为各|为更)')
 _PRONOUN_PATTERNS = ('我们', '他们', '你们', '我校', '本校')
+_TITLE_CHARS = re.compile(r'[《》〈〉「」【】《-』]')
 
 
 def _is_valid_entity(entity: str) -> bool:
     """
     判断 entity 是否是有意义的具名实体（可用于覆盖率和共现验证）。
-    过滤掉 LLM 误提取的整句片段：含人称代词、序号起头、连接词起头。
+    过滤掉 LLM 误提取的整句片段：
+    - 含人称代词
+    - 以序号/阶段描述起头
+    - 以连接词/动词/介词起头
+    - 超长（≥20字）且不含书名号/标题符号
     """
     if not entity or not entity.strip():
         return False
@@ -542,7 +554,14 @@ def _is_valid_entity(entity: str) -> bool:
         return False
     if _ORDINAL_PREFIX.match(entity):
         return False
+    if _DIYIJIEDUAN_PREFIX.match(entity):
+        return False
     if _CONJUNCTION_PREFIX.match(entity):
+        return False
+    if _VERB_PREFIX.match(entity):
+        return False
+    # 超长且无标题符号 → 大概率是句子
+    if len(entity) >= 20 and not _TITLE_CHARS.search(entity):
         return False
     return True
 
