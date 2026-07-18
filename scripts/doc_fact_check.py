@@ -537,6 +537,8 @@ _VERB_PREFIX = re.compile(
     r'|形成|确保|聚焦|坚持|促进|统筹|围绕|围绕|为了|为各|为更)')
 _PRONOUN_PATTERNS = ('我们', '他们', '你们', '我校', '本校')
 _TITLE_CHARS = re.compile(r'[《》〈〉「」【】《-』]')
+# 语法虚词/助词开头 → 句子尾缀或介词短语，不是具名实体
+_PARTICLE_PREFIX = re.compile(r'^[等与个的既]')
 
 
 def _is_valid_entity(entity: str) -> bool:
@@ -546,6 +548,8 @@ def _is_valid_entity(entity: str) -> bool:
     - 含人称代词
     - 以序号/阶段描述起头
     - 以连接词/动词/介词起头
+    - 以语法虚词（等/与/个/的/既）起头
+    - 含「不是」的否定谓语结构（句子片段）
     - 超长（≥20字）且不含书名号/标题符号
     """
     if not entity or not entity.strip():
@@ -559,6 +563,10 @@ def _is_valid_entity(entity: str) -> bool:
     if _CONJUNCTION_PREFIX.match(entity):
         return False
     if _VERB_PREFIX.match(entity):
+        return False
+    if _PARTICLE_PREFIX.match(entity):
+        return False
+    if '不是' in entity:
         return False
     # 超长且无标题符号 → 大概率是句子
     if len(entity) >= 20 and not _TITLE_CHARS.search(entity):

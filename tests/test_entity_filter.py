@@ -137,6 +137,39 @@ class TestIsValidEntityExtended:
         # 带《》的长文件名是合法实体
         assert D._is_valid_entity("《普通高等学校教师党建和思想政治工作质量标准》") is True
 
+    # ── 语法助词/片段模式 ─────────────────────────────────────
+    def test_filters_dengword_prefix(self):
+        # "等跨校联合培养新范式" → 以「等」开头是句子尾缀
+        assert D._is_valid_entity("等跨校联合培养新范式") is False
+
+    def test_filters_yu_preposition(self):
+        # "与北京航空航天大学" → 介词短语
+        assert D._is_valid_entity("与北京航空航天大学") is False
+
+    def test_filters_ge_classifier(self):
+        # "个双学士学位项目" → 量词起头
+        assert D._is_valid_entity("个双学士学位项目") is False
+
+    def test_filters_de_particle(self):
+        # "的实施方案" → 助词起头
+        assert D._is_valid_entity("的实施方案") is False
+
+    def test_filters_ji_conjunction(self):
+        # "既深谙财经专业" → 连词起头
+        assert D._is_valid_entity("既深谙财经专业") is False
+
+    def test_filters_bushi_clause(self):
+        # "学科交叉不是简单地把两个学科" → 含「不是」的句子片段
+        assert D._is_valid_entity("学科交叉不是简单地把两个学科") is False
+
+    # 确保合法实体不被误过滤
+    def test_keeps_institution_with_yu(self):
+        # 实体名称中包含「与」但不是以「与」开头
+        assert D._is_valid_entity("财经大学与企业合作项目") is True  # 内含 与 但不是开头
+
+    def test_keeps_beijing_univ(self):
+        assert D._is_valid_entity("北京航空航天大学") is True
+
 
 class TestEntityFilterAppliedInVerification:
     """验证过滤器在 search_in_reference 中实际生效。"""
