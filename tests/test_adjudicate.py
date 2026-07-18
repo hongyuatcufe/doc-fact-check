@@ -7,10 +7,12 @@ TDD — adjudicate.py
   2. 无 API key → skip silently，不修改 item 状态
   3. STATUS_MAP 完整性
   4. adjudicate_all 只处理有 候选证据 字段的条目
+  5. mock LLM → 覆盖成功/未知verdict/带citation路径
 """
 
 import os
 import pytest
+from unittest.mock import patch
 import adjudicate as A
 
 
@@ -153,6 +155,205 @@ class TestAdjudicateAll:
 # ──────────────────────────────────────────────────────────────────────────────
 # _append_note helper
 # ──────────────────────────────────────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _build_user_msg — 字段拼装
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestBuildUserMsg:
+    def _cand(self, text="参考片段内容"):
+        return {"sourcePath": "ref.txt", "text": text, "score": 0.9}
+
+    def test_contains_claim_text(self):
+        item = {
+            "表述内容": "学校获批科研项目356项",
+            "命中数字": [], "命中实体": [], "子命题": [],
+        }
+        msg = A._build_user_msg(item, [self._cand()])
+        assert "学校获批科研项目356项" in msg
+
+    def test_numbers_included(self):
+        item = {
+            "表述内容": "获批356项",
+            "命中数字": ["356"], "命中实体": [], "子命题": [],
+        }
+        msg = A._build_user_msg(item, [self._cand()])
+        assert "356" in msg
+
+    def test_entities_included(self):
+        item = {
+            "表述内容": "国家级科研项目若干",
+            "命中数字": [], "命中实体": ["国家级科研项目"], "子命题": [],
+        }
+        msg = A._build_user_msg(item, [self._cand()])
+        assert "国家级科研项目" in msg
+
+    def test_sub_claims_included_when_multiple(self):
+        item = {
+            "表述内容": "A，B两件事",
+            "命中数字": [], "命中实体": [],
+            "子命题": ["A", "B"],
+        }
+        msg = A._build_user_msg(item, [self._cand()])
+        assert "A" in msg and "B" in msg
+
+    def test_sub_claims_not_included_when_single(self):
+        item = {
+            "表述内容": "仅一件事",
+            "命中数字": [], "命中实体": [],
+            "子命题": ["仅一件事"],
+        }
+        msg = A._build_user_msg(item, [self._cand()])
+        assert "可分解子命题" not in msg
+
+    def test_candidate_text_in_output(self):
+        item = {
+            "表述内容": "声明内容",
+            "命中数字": [], "命中实体": [], "子命题": [],
+        }
+        msg = A._build_user_msg(item, [self._cand("这是参考文本内容")])
+        assert "这是参考文本内容" in msg
+
+    def test_at_most_5_candidates(self):
+        item = {
+            "表述内容": "声明",
+            "命中数字": [], "命中实体": [], "子命题": [],
+        }
+        cands = [self._cand(f"文本{i}") for i in range(10)]
+        msg = A._build_user_msg(item, cands)
+        # 只渲染前5个
+        assert "文本4" in msg
+        assert "文本5" not in msg
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# adjudicate_item — mock LLM 成功路径
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestAdjudicateItemWithMockLLM:
+    """通过 mock _call_llm 覆盖 LLM 返回成功结果的分支。"""
+
+    CANDIDATE = {
+        "sourcePath": "ref.txt",
+        "text": "学校全年获批国家级科研项目356项。",
+        "score": 0.9,
+    }
+
+    def _item(self, status="△ 部分匹配"):
+        return {
+            "表述内容": "学校获批国家级科研项目356项",
+            "命中数字": ["356"],
+            "命中实体": ["国家级科研项目"],
+            "子命题": ["学校获批国家级科研项目356项"],
+            "状态": status,
+            "反向验证警告": "",
+        }
+
+    def test_confirmed_verdict_updates_status(self):
+        with patch("adjudicate._call_llm", return_value={"verdict": "confirmed", "citation": "", "reasoning": ""}):
+            item = self._item()
+            A.adjudicate_item(item, [self.CANDIDATE])
+        assert "✓" in item["状态"]
+
+    def test_not_found_verdict_updates_status(self):
+        with patch("adjudicate._call_llm", return_value={"verdict": "not_found", "citation": "", "reasoning": ""}):
+            item = self._item()
+            A.adjudicate_item(item, [self.CANDIDATE])
+        assert "✗" in item["状态"] or "未找到" in item["状态"]
+
+    def test_needs_review_verdict(self):
+        with patch("adjudicate._call_llm", return_value={"verdict": "needs_review", "citation": "", "reasoning": ""}):
+            item = self._item()
+            A.adjudicate_item(item, [self.CANDIDATE])
+        assert "△" in item["状态"] or "需人工" in item["状态"]
+
+    def test_inconsistent_verdict(self):
+        with patch("adjudicate._call_llm", return_value={"verdict": "inconsistent", "citation": "", "reasoning": ""}):
+            item = self._item()
+            A.adjudicate_item(item, [self.CANDIDATE])
+        assert "✗" in item["状态"] or "不一致" in item["状态"]
+
+    def test_citation_stored_in_item(self):
+        with patch("adjudicate._call_llm", return_value={"verdict": "confirmed", "citation": "参考片段123", "reasoning": ""}):
+            item = self._item()
+            A.adjudicate_item(item, [self.CANDIDATE])
+        assert item.get("判定引用") == "参考片段123"
+
+    def test_reasoning_stored_in_item(self):
+        with patch("adjudicate._call_llm", return_value={"verdict": "confirmed", "citation": "", "reasoning": "数字完全匹配"}):
+            item = self._item()
+            A.adjudicate_item(item, [self.CANDIDATE])
+        assert item.get("判定理由") == "数字完全匹配"
+
+    def test_reasoning_appended_to_warning(self):
+        with patch("adjudicate._call_llm", return_value={"verdict": "confirmed", "citation": "", "reasoning": "LLM确认无误"}):
+            item = self._item()
+            A.adjudicate_item(item, [self.CANDIDATE])
+        assert "LLM确认无误" in item.get("反向验证警告", "")
+
+    def test_unknown_verdict_preserves_status(self):
+        with patch("adjudicate._call_llm", return_value={"verdict": "unknown_xyz", "citation": "", "reasoning": ""}):
+            item = self._item(status="✓ 已确认")
+            A.adjudicate_item(item, [self.CANDIDATE])
+        assert item["状态"] == "✓ 已确认"
+
+    def test_unknown_verdict_appends_note(self):
+        with patch("adjudicate._call_llm", return_value={"verdict": "unknown_xyz", "citation": "", "reasoning": ""}):
+            item = self._item()
+            A.adjudicate_item(item, [self.CANDIDATE])
+        assert "未知" in item.get("反向验证警告", "") or "unknown_xyz" in item.get("反向验证警告", "")
+
+    def test_llm_returns_none_preserves_status(self):
+        with patch("adjudicate._call_llm", return_value=None):
+            item = self._item(status="✓ 已确认")
+            # 需要有 API key 才会调用 _call_llm，先 mock _llm_config
+            with patch("adjudicate._llm_config", return_value=("fake-key", "https://api.test", "test-model")):
+                A.adjudicate_item(item, [self.CANDIDATE])
+        assert item["状态"] == "✓ 已确认"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# adjudicate_all — mock LLM 路径
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestAdjudicateAllWithMockLLM:
+    CANDIDATE = {"sourcePath": "ref.txt", "text": "参考文本", "score": 0.9}
+
+    def _item(self, with_cand=True):
+        item = {
+            "表述内容": "声明内容",
+            "命中数字": [], "命中实体": [], "子命题": [],
+            "状态": "△ 部分匹配", "反向验证警告": "",
+        }
+        if with_cand:
+            item["候选证据"] = [self.CANDIDATE]
+        return item
+
+    def test_all_with_candidates_processed(self):
+        items = [self._item(with_cand=True) for _ in range(3)]
+        with patch("adjudicate._llm_config", return_value=("key", "base", "model")):
+            with patch("adjudicate._call_llm", return_value={"verdict": "confirmed", "citation": "", "reasoning": ""}):
+                A.adjudicate_all(items, verbose=False)
+        for it in items:
+            assert "✓" in it["状态"]
+
+    def test_items_without_candidates_skipped(self):
+        item_with = self._item(with_cand=True)
+        item_without = self._item(with_cand=False)
+        with patch("adjudicate._llm_config", return_value=("key", "base", "model")):
+            with patch("adjudicate._call_llm", return_value={"verdict": "confirmed", "citation": "", "reasoning": ""}):
+                A.adjudicate_all([item_with, item_without], verbose=False)
+        assert "✓" in item_with["状态"]
+        assert "✓" not in item_without["状态"]  # 未处理，保持原值
+
+    def test_verbose_prints_progress(self, capsys):
+        items = [self._item() for _ in range(11)]
+        with patch("adjudicate._llm_config", return_value=("key", "base", "model")):
+            with patch("adjudicate._call_llm", return_value={"verdict": "confirmed", "citation": "", "reasoning": ""}):
+                A.adjudicate_all(items, verbose=True)
+        out = capsys.readouterr().out
+        assert "LLM判定" in out
+
 
 class TestAppendNote:
     def test_appends_to_empty(self):
