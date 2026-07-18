@@ -10,7 +10,7 @@
 > 下游 vendored 副本 `gongwen_web_agent/tools/doc-fact-check/`、
 > `gongwen-agent/tools/doc-fact-check/`。
 
-最后更新：2026-07-18
+最后更新：2026-07-18（grilling 会话后修订）
 
 ---
 
@@ -100,46 +100,52 @@ urllib 调用，jieba→正则兜底链完整），但：
 
 ## 四、阶段划分
 
-### Stage 0 — 评测地基（先做，~1 天）
+### Stage 0 — 评测地基（持续运行，与后续 Stage 并行）
 
-没有这步，后面全是拍脑袋。**这是整个方案的前置门。**
+没有这步，后面全是拍脑袋。**但 Stage 0 不再是硬前置门**——改为持续监测机制，
+与 Stage 1/2A 并行推进，不等凑齐标注集再启动后续工作。
 
-**0.1 建标注集**（~0.5 天）
-- 语料来源：gongwen 真实稿的已知漏检案例 + academic_wiki 那份 141 条讲话稿核查案例
+**背景**：gongwen 有真实漏检案例，但对应的原始材料已缺失，无法回溯标注；
+只能靠后续新材料持续积累。评测脚本先建好，哪怕初始只有少量案例也能跑，
+之后每次有新材料进来就补标注、重跑，持续更新 Recall 数字。
+
+**0.1 建标注集**（初始 ~0.5 天，之后持续追加）
+- 语料来源：新积累的 gongwen 漏检案例 + academic_wiki 那份 141 条讲话稿核查案例
   + `rstacks-fixtures/corpus`。
 - 标注单元：`{声明文本, 期望状态, 期望出处(sourcePath+片段), 漏检类型}`。
 - **漏检类型二分类**（决定后续 ROI）：
   - `精确型`：专名/数字/文号，trigram 即可召回。
   - `近义型`：近义改写 / 跨文档聚合 / 复合子命题，必须语义或 LLM。
-- 产出：`eval/factcheck-recall.jsonl`（≥ 60 条，两类各半）。
+- 产出：`eval/factcheck-recall.jsonl`（初始尽量多，持续追加；目标 ≥ 60 条两类各半）。
+- 文件位置：权威源 `doc-fact-check/eval/`（评测是对引擎的测试，随引擎走）。
 
 **0.2 建评测脚本**（~0.5 天）
 - `eval/run_eval.py`：对给定管线跑标注集，输出 Recall@{1,5}、各状态混淆矩阵、
   精确型/近义型分层 Recall、平均延迟、外部 API 调用次数。
 - 跑一遍 v3 现状 → 记录基线（预期：精确型高、近义型接近 0）。
 
-**验收**：基线数字落纸；精确型 vs 近义型漏检占比明确 —— 这个比例直接决定 Stage 2B 是否值得做。
+**验收**：脚本可运行、基线数字落纸；精确型 vs 近义型漏检占比持续积累中
+—— Stage 2B 触发阈值由此数字决定（见下文）。
 
 ---
 
 ### Stage 1 — 激活并验证 ① LLM 抽取（~1 天）
 
-**前置诊断**：先确认 v4"失效"是哪种：
-- (a) 未接线 —— live 脚本调了 v3 → Stage 1 = 改入口一行 + 验证。
-- (b) 接了但质量差 —— JSON 解析失败率高 / 漏抽 / 误抽 → Stage 1 = 修抽取逻辑。
+**前置诊断已完成**：v4 失效原因为 **(a) 未接线**。
+`factcheck_llm.py` 代码完整（抽取逻辑、兜底链、v3 后端对接均已实现），
+两个下游的 `run-fact-check.sh` 入口仍调 `doc_fact_check.py`（v3），未切换。
+工作量 = 改入口一行 + 验证，估算 **0.5 天**。
 
-**1.1 若 (a)**
-- `run-fact-check.sh` 入口 `doc_fact_check.py` → `factcheck_llm.py`（DeepSeek key 已在 gongwen 环境）。
+**1.1 接线**
+- 两个下游 `run-fact-check.sh` 入口 `doc_fact_check.py` → `factcheck_llm.py`
+  （DeepSeek key 已在 gongwen 环境）。
+- 注意：需先完成 Stage 4.1（补齐下游缺失文件），`factcheck_llm.py` 才存在于下游。
 
-**1.2 若 (b)**
-- 加固 `_parse_claims`（已有围栏剥离 + 截取兜底，补：分块重试、失败块降级到离线抽取而非整体 return None）。
-- prompt 迭代：用 0.1 标注集回归"抽取召回 / 误抽率"。
-
-**1.3 通用**
+**1.2 通用**
 - 保留 `--offline`（jieba→正则）兜底。
 - 记录每文档抽取 token 用量（校验 <1 美分/文档 估算）。
 
-**验收**：抽取召回（该核声明被抽出比例）较正则提升可量化；误抽（口号/引语/纯观点）显著下降；无 key/超时可离线出结果。
+**验收**：抽取召回（该核声明被抽出比例）较正则提升可量化；误抽（口号/引语/纯观点）显著下降；无 key/超时可离线出结果。Stage 4.1 必须先于本 Stage 完成。
 
 ---
 
@@ -156,14 +162,19 @@ urllib 调用，jieba→正则兜底链完整），但：
 - 立即收益：精确型漏检里因关键词抽取不全/顺序丢失而 miss 的部分；
   且为 ③ 判定喂真正的证据上下文（而非全文 grep 片段）。
 - 纯本地、免费、无外发。
+- **⚠ 必须处理短查询问题**（FTS5 trigram 对 ≤2 字查询静默返回空）：
+  `retrieval.py` 中查询长度 < 3 字时回退到 `LIKE '%xx%'` 全扫描，
+  防止单字机构缩写（局/院/部）、双字地名（北京/上海）等静默漏检。
+  此项为正确性问题，纳入本 Stage 验收标准。
 
-**2B. 向量语义 + RRF（治近义，条件触发）**（~2 天，仅当 0.1 显示近义型占比可观）
+**2B. 向量语义 + RRF（治近义，条件触发）**（~2 天，仅当 Stage 0 实测显示近义型占比可观）
 - `retrieval.py` 加 embedding：参考 chunk 调 DashScope `text-embedding-v4`
   （urllib，与 factcheck_llm 同款 OpenAI 兼容调用），归一化向量存 sqlite BLOB；
   查询侧同样 embed，cosine 召回，与 2A 的 BM25 候选做 **RRF 融合**（k=60）。
 - 纯 Python 实现（1024 维 cosine 手写即可，百篇级语料无需 numpy/faiss）。
   这是 academic_wiki M2C/M2D 已验证方案（改写集 Recall@5：关键词 0% → hybrid 91.7%~100%）的 Python 移植。
 - **门控**：只有 2A 之后剩余漏检仍以近义型为主时才做；若剩余多为精确型则跳过，省掉外发/成本/延迟。
+  触发阈值由 Stage 0 评测数字决定，**20% 仅为占位符**，Stage 0 产出后替换为实测值。
 - SaaS 边界：`--embed` 显式开关；缺向量回退 2A 关键词（照搬 academic_wiki 的回退设计）。
   模型/维度变化时重建向量。
 
@@ -187,6 +198,8 @@ urllib 调用，jieba→正则兜底链完整），但：
 
 **3.2 开关与回退**
 - `--llm-judge` 显式开启；默认仍走规则判定（快、零外发）。
+  **默认关闭原因：LLM 判定会显著增加每任务延迟，影响用户体验。**
+  Stage 3 完成后做延迟基准测试，根据结果决定是否调整默认值。
 - LLM 不可用时回退规则判定，状态标注注明"未经 LLM 复核"。
 
 **3.3 判定规则对齐**（沿用 academic_wiki skill 的判定语义）
@@ -204,15 +217,26 @@ urllib 调用，jieba→正则兜底链完整），但：
 
 因 CLI 入参 + JSON schema 冻结，下游改动最小化。
 
-**4.1 gongwen_web_agent**
-- `run-fact-check.sh` 换引擎入口（→ `factcheck_llm.py` 或新 `factcheck.py` 统一入口）。
+**当前发现**：两个下游 `tools/doc-fact-check/scripts/` 只有 `doc_fact_check.py`，
+缺少 `entity_config.yaml`、`factcheck_llm.py`、`add_category_words.py`。
+同步链也不完整：现有 `sync-from-upstream.sh` 方向是 `gongwen-agent → gongwen_web_agent`，
+从权威源 `doc-fact-check → gongwen-agent` 这段尚无脚本。
+
+**4.1 补齐下游缺失文件（先做，Stage 1 的前置）**
+- 将 `entity_config.yaml`、`factcheck_llm.py`、`add_category_words.py` 补充到：
+  - `gongwen-agent/tools/doc-fact-check/scripts/`
+  - `gongwen_web_agent/tools/doc-fact-check/scripts/`
+- 此步完成后 Stage 1 才可执行。
+
+**4.2 建立完整同步链**
+- 在权威源新增 `scripts/push-to-downstream.sh`：将 `scripts/` 目录同步到两个下游的
+  `tools/doc-fact-check/scripts/`，建立完整同步链：
+  ```
+  doc-fact-check/scripts/ → gongwen-agent/tools/doc-fact-check/scripts/
+                          → gongwen_web_agent/tools/doc-fact-check/scripts/
+  ```
 - `requirements.txt` 增依赖（`rank_bm25` 或仅 stdlib+sqlite；jieba 已可选）。
 - 回归真实稿，确认 `parse-reports.py` 解析不破、`checklist_result.json` 字段兼容。
-- SaaS 决策：默认档是否开 `--embed`/`--llm-judge`（涉及每任务成本与数据外发，见风险）。
-
-**4.2 单机版 gongwen-agent**
-- 通过 `sync-from-upstream.sh` 拉取，`verify byte-identical`。
-- 单机无 SaaS 隐私约束，可默认开启 LLM 判定。
 
 **验收**：两个下游项目现有真实稿回归通过；vendored 副本与权威源字节一致。
 
@@ -221,16 +245,18 @@ urllib 调用，jieba→正则兜底链完整），但：
 ## 五、里程碑与依赖
 
 ```
-Stage 0 (评测地基) ──┬──▶ Stage 1 (① 激活)  ─┐
-                     │                          ├──▶ Stage 3 (③ LLM 判定) ──▶ Stage 4 (传播)
-                     └──▶ Stage 2A (trigram) ──▶ Stage 2B (向量, 条件) ─┘
+Stage 4.1 (补齐缺失文件) ──▶ Stage 1 (① 激活)  ─┐
+                                                    ├──▶ Stage 3 (③ LLM 判定) ──▶ Stage 4.2 (同步脚本)
+Stage 0 (评测地基, 持续) ──▶ Stage 2A (trigram) ──▶ Stage 2B (向量, 条件) ─┘
 ```
 
-- Stage 0 是硬前置，阻塞所有后续。
-- Stage 1 与 2A 可并行。
-- Stage 2B 由 Stage 0 的近义型占比 + Stage 2A 的剩余漏检**共同门控**，可能不做。
-- Stage 3 依赖 Stage 2 提供的候选证据上下文。
-- 工时合计：约 8–10 人日（不含 2B 则 6–8）。
+- **Stage 4.1（补文件）是 Stage 1 的硬前置**；Stage 4.2（同步脚本）在最后写。
+- **Stage 0 不再阻塞其他 Stage**，改为持续监测，与所有 Stage 并行运行。
+- Stage 1 与 Stage 2A 可并行（Stage 4.1 完成后）。
+- Stage 2B 由 Stage 0 实测的近义型占比 + Stage 2A 剩余漏检**共同门控**，可能不做；
+  触发阈值为占位符 20%，Stage 0 产出后替换为实测值。
+- Stage 3 依赖 Stage 2 提供的候选证据上下文；`--llm-judge` 默认关闭，延迟测试后决定是否开。
+- 工时合计：约 8.5–13 人日（含 Stage 4.1 补文件；不含 2B 则 6.5–10）。
 
 ---
 
@@ -244,10 +270,12 @@ Stage 0 (评测地基) ──┬──▶ Stage 1 (① 激活)  ─┐
 | CLI 契约破坏 | 下游脚本依赖 JSON 字段 | 字段只增不改；Stage 4 前跑下游回归 |
 | v4 抽取稳定性 | JSON 解析失败/漏抽 | 分块重试 + 失败块降级离线，不整体失败 |
 
-**需你拍板的决策点**：
-1. **v4"失效"归类**：(a) 未接线 还是 (b) 抽取质量问题？→ 定 Stage 1 工作量。
-2. **SaaS 默认档**：gongwen_web_agent 是否默认开 `--embed` / `--llm-judge`？（成本 vs 召回 vs 隐私）
-3. **2B 触发阈值**：近义型漏检占比达到多少才投向量层？（建议 ≥ 20% 才做）
+**已拍板的决策点**：
+1. **v4"失效"归类**：**(a) 未接线**，改一行入口即可，工作量 0.5 天。
+2. **`--llm-judge` 默认关闭**：原因是延迟影响用户体验；Stage 3 完成后做延迟测试再决定是否调整默认值。
+3. **2B 触发阈值**：由 Stage 0 实测结果决定，20% 仅为占位符。
+4. **Stage 0 不再是硬前置**：改为持续监测机制，与后续 Stage 并行；`eval/` 放权威源。
+5. **Stage 4 分两步**：先补齐下游缺失文件（Stage 1 的前置），再写同步脚本。
 
 ---
 
