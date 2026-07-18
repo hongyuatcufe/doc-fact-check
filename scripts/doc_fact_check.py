@@ -616,6 +616,7 @@ def verify_entity_context_cooccurrence(entities, matched_kw, references, context
 def search_in_reference(texts, references):
     """
     增强版全文检索：
+    - Stage 2A: 优先用 retrieval.py（trigram/BM25）检索排序候选，回退到子串匹配
     - 找到首个关键词匹配后继续搜全部参考文档做实体覆盖 + 数字验证
     - 实体覆盖检查跨全部参考文档
     - 子命题独立验证
@@ -624,6 +625,16 @@ def search_in_reference(texts, references):
     index = build_ref_index(references)
     total = len(texts)
     last_pct = 0
+
+    # Stage 2A: 构建 retrieval 索引（一次性，复用全部 statements）
+    _ret_index = None
+    _ret_mod = None
+    try:
+        import retrieval as _ret_mod
+        ref_contents = {name: content for name, (_, content) in index.items()}
+        _ret_index = _ret_mod.build_index(ref_contents)
+    except Exception:
+        pass  # 回退到子串匹配
 
     for idx, item in enumerate(texts):
         # 进度指示
@@ -643,23 +654,57 @@ def search_in_reference(texts, references):
         matched_ref = ""
         matched_content = ""
 
-        # 第一遍：找到首个关键词匹配（确定出处和原文片段）
-        for kw in keywords:
-            for ref_name, (ref_path, ref_content) in index.items():
-                if kw in ref_content:
-                    snippet = get_context_snippet(ref_content, kw, 80)
+        # 第一遍：找到首个匹配（确定出处和原文片段）
+        # Stage 2A: 先用 retrieval 排序候选，再从候选中挑第一个含关键词的
+        if _ret_index is not None and _ret_mod is not None:
+            try:
+                candidates = _ret_mod.retrieve(
+                    query, all_numbers, all_entities, _ret_index, top_k=5)
+                for cand in candidates:
+                    ref_name = cand["sourcePath"]
+                    if ref_name not in index:
+                        continue
+                    _, ref_content = index[ref_name]
+                    # 只接受关键词在 chunk 文本中实际出现的候选，防止弱证据假正例
+                    kw_hit = next(
+                        (kw for kw in keywords if kw in cand["text"]),
+                        None)
+                    if kw_hit is None:
+                        continue  # 此候选无关键词命中，跳过
+                    snippet = get_context_snippet(ref_content, kw_hit, 80)
                     item["状态"] = "\u2713 \u5df2\u786e\u8ba4"
                     item["出处"] = ref_name
                     item["原文片段"] = f"{ref_name}: ...{snippet}..."
-                    item["匹配关键词"] = kw
+                    item["匹配关键词"] = kw_hit
                     item["匹配上下文简述"] = snippet[:120]
-                    matched_kw = kw
+                    matched_kw = kw_hit
                     matched_ref = ref_name
                     matched_content = ref_content
                     found_any = True
+                    # 保存候选证据供 Stage 3 判定层使用
+                    item["候选证据"] = candidates[:5]
                     break
-            if found_any:
-                break
+            except Exception:
+                pass  # 降级到子串
+
+        # 回退：原子串匹配
+        if not found_any:
+            for kw in keywords:
+                for ref_name, (ref_path, ref_content) in index.items():
+                    if kw in ref_content:
+                        snippet = get_context_snippet(ref_content, kw, 80)
+                        item["状态"] = "\u2713 \u5df2\u786e\u8ba4"
+                        item["出处"] = ref_name
+                        item["原文片段"] = f"{ref_name}: ...{snippet}..."
+                        item["匹配关键词"] = kw
+                        item["匹配上下文简述"] = snippet[:120]
+                        matched_kw = kw
+                        matched_ref = ref_name
+                        matched_content = ref_content
+                        found_any = True
+                        break
+                if found_any:
+                    break
 
         if not found_any:
             continue
@@ -947,9 +992,17 @@ def cmd_full_check():
         print("用法: python3 doc_fact_check.py <目标文档.docx> <参考文档目录> [输出Excel路径]")
         sys.exit(1)
 
-    main_docx   = sys.argv[1]
-    ref_dir     = sys.argv[2]
-    output_xlsx = sys.argv[3] if len(sys.argv) > 3 else "核对清单.xlsx"
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = [a for a in sys.argv[1:] if a.startswith("--")]
+    llm_judge = "--llm-judge" in flags
+
+    main_docx   = args[0] if len(args) > 0 else ""
+    ref_dir     = args[1] if len(args) > 1 else ""
+    output_xlsx = args[2] if len(args) > 2 else "核对清单.xlsx"
+
+    if not main_docx or not ref_dir:
+        print("用法: python3 doc_fact_check.py <目标文档.docx> <参考文档目录> [输出Excel路径] [--llm-judge]")
+        sys.exit(1)
 
     txt_dir = os.path.join(os.path.dirname(main_docx) or ".", "txt_output")
     os.makedirs(txt_dir, exist_ok=True)
@@ -1020,6 +1073,19 @@ def cmd_full_check():
     elif ENABLE_INTRA_DOC_CHECK:
         print("  未发现文档内矛盾")
     print()
+
+    # Step 3.8: LLM 判定（--llm-judge 开关）
+    if llm_judge:
+        print("\n" + "=" * 60)
+        print("Step 3.8: LLM 判定层（--llm-judge）")
+        print("=" * 60)
+        try:
+            import adjudicate as _adj
+            _adj.adjudicate_all(statements, verbose=True)
+        except ImportError:
+            print("  ⚠ adjudicate.py 未找到，跳过 LLM 判定")
+    else:
+        print("  （LLM 判定已跳过，使用 --llm-judge 开启）")
 
     # Step 4: 保存中间结果
     print("\n" + "=" * 60)
