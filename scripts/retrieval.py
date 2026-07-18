@@ -122,6 +122,10 @@ def _split_chunks(text: str, target: int = _CHUNK_TARGET,
         if chunk_text.strip():
             chunks.append((chunk_start, chunk_text))
 
+        # 剩余文本已全部纳入本块，无需继续滑动
+        if best_end >= len(text):
+            break
+
         # 下一块起点：best_end - overlap（保证重叠）
         next_start = max(chunk_start + 1, best_end - overlap)
         chunk_start = next_start
@@ -215,6 +219,8 @@ def _fts5_search(conn: sqlite3.Connection, query: str,
     """
     # FTS5 trigram 要求查询串 >= 3 Unicode 字符；
     # 对于短查询，此函数不应被调用（由调用方处理回退）。
+    # 用双引号 phrase-quote 整个查询，避免 %, ", * 等字符触发 FTS5 语法错误。
+    safe_query = '"' + query.replace('"', '""') + '"'
     try:
         rows = conn.execute(
             """
@@ -225,7 +231,7 @@ def _fts5_search(conn: sqlite3.Connection, query: str,
             ORDER BY score DESC
             LIMIT ?
             """,
-            (query, top_k * 3),  # 多取一些以便后续 exactTerms 过滤
+            (safe_query, top_k * 3),  # 多取一些以便后续 exactTerms 过滤
         ).fetchall()
         return [(row[0], row[1]) for row in rows]
     except sqlite3.OperationalError as e:
