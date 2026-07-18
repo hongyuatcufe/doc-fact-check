@@ -526,6 +526,27 @@ def verify_sub_claims(sub_claims, references):
     return match_flags, total, matched, details
 
 
+_ORDINAL_PREFIX = re.compile(r'^[一二三四五六七八九十][是、]')
+_CONJUNCTION_PREFIX = re.compile(r'^(?:因此|所以|而且|并且|但是|然而|同时|此外|另外|不仅|其次)')
+_PRONOUN_PATTERNS = ('我们', '他们', '你们', '我校', '本校')
+
+
+def _is_valid_entity(entity: str) -> bool:
+    """
+    判断 entity 是否是有意义的具名实体（可用于覆盖率和共现验证）。
+    过滤掉 LLM 误提取的整句片段：含人称代词、序号起头、连接词起头。
+    """
+    if not entity or not entity.strip():
+        return False
+    if any(p in entity for p in _PRONOUN_PATTERNS):
+        return False
+    if _ORDINAL_PREFIX.match(entity):
+        return False
+    if _CONJUNCTION_PREFIX.match(entity):
+        return False
+    return True
+
+
 def verify_entity_coverage(entities, all_ref_contents):
     """
     实体覆盖检查：目标表述中的专有名词，在所有参考文档中出现了多少。
@@ -646,7 +667,8 @@ def search_in_reference(texts, references):
         query = item["表述内容"]
         keywords = extract_keywords(query)
         all_numbers = item.get("命中数字", [])
-        all_entities = item.get("命中实体", [])
+        # 过滤 LLM 误提取的噪声实体（人称代词/序号/连接词开头的句子片段）
+        all_entities = [e for e in item.get("命中实体", []) if _is_valid_entity(e)]
         sub_claims = item.get("子命题", [])
 
         found_any = False
