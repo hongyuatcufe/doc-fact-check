@@ -450,7 +450,8 @@ def extract_keywords(text):
             seen.add(kw)
             result.append(kw)
     result.sort(key=len, reverse=True)
-    return result[:8] if result else [text[:20]]
+    fallback = [text[:20]] if text.strip() else []
+    return result[:8] if result else fallback
 
 
 def get_context_snippet(content, keyword, context_width=80):
