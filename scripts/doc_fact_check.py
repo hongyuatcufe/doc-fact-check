@@ -824,6 +824,22 @@ def search_in_reference(texts, references):
                     f"已自动降级为需核实（防止通用词假✓漏报）"
                 )
 
+        # === ⑤: 短关键词 + 所有数字均缺失 → "✗ 未找到"（防 △部分匹配 假阳性）===
+        # Rule ④ 只覆盖「假✓」，但子命题失败后状态已降为「△ 部分匹配」，
+        # 此时若匹配仅靠低区分度短词且声明中的全部数字均不在参考文档，
+        # 说明根本无实质证据，应进一步降为「未找到」。
+        if "△" in item.get("状态", "") and matched_kw and len(matched_kw) <= 3 and all_numbers:
+            all_nums_missing = all(
+                not any(n in rc for _, rc in references)
+                for n in all_numbers
+            )
+            if all_nums_missing:
+                item["状态"] = "✗ 未找到"
+                warnings.append(
+                    f"关键词'{matched_kw}'(≤3字)命中但声明中全部数字均不在参考文档，"
+                    f"实质无证据，降级为未找到"
+                )
+
         item["反向验证警告"] = "; ".join(warnings) if warnings else ""
 
 
