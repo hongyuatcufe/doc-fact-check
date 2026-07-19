@@ -316,6 +316,112 @@ class TestSearchInReferenceExtraPaths:
 # get_context_snippet — additional edge cases
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 「政策依据：」行 — 跳过实体-语境共现检查，保留文件名存在性检查
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestPolicyRefLineCooccurrenceSkip:
+    """
+    「政策依据：A文件、B文件」格式：
+    - 不因为 B文件实体不在 A文件关键词附近而触发「△ 数据不一致」
+    - 但若文件名完全不在参考库 → 仍然 ✗ 未找到
+    - 非「政策依据：」格式的普通表述仍然走共现检查
+    """
+
+    def _policy_item(self, query, entities):
+        return {
+            "表述内容": query,
+            "命中数字": [],
+            "命中实体": entities,
+            "子命题": [],
+            "状态": "✗ 未找到",
+            "反向验证警告": "",
+            "出处": "", "匹配上下文简述": "", "原文片段": "", "匹配关键词": "",
+        }
+
+    def test_policy_ref_multi_doc_no_inconsistent(self):
+        """
+        「政策依据：」行同时引用 A、B 两个文件：
+        - 关键词命中 A 文件（「学生欺凌综合治理方案」）
+        - 实体「特殊单位名ZZZ」仅见于 B 文件，与 A 文件关键词不共现
+        → 不应触发 △ 数据不一致（多文件并列引用是合法格式，跳过共现检查）
+        """
+        # A 文件：含匹配关键词，但不含实体
+        ref_a = "学生欺凌综合治理方案的具体要求如下：" + "X" * 600
+        # B 文件：含实体「特殊单位名ZZZ」，但不含关键词
+        ref_b = "特殊单位名ZZZ的相关规定内容。"
+
+        it = self._policy_item(
+            query=(
+                "- 政策依据：教育部办公厅《学生欺凌综合治理方案》"
+                "（教督〔2017〕10号）、教育部《安全管理规定》（教基厅〔2024〕18号）"
+            ),
+            entities=["特殊单位名ZZZ"],
+        )
+        D.search_in_reference([it], [
+            _ref("ref_a.txt", ref_a),
+            _ref("ref_b.txt", ref_b),
+        ])
+        assert "数据不一致" not in it["状态"], \
+            f"政策依据多文件引用不应触发数据不一致，实际: {it['状态']}"
+
+    def test_policy_ref_missing_doc_stays_not_found(self):
+        """
+        「政策依据：」行引用的文件名完全不在参考库
+        → 仍应为 ✗ 未找到（文件名存在性检查不受影响）
+        """
+        ref = "完全不相关的内容。"
+        it = self._policy_item(
+            query="- 政策依据： 《完全不存在的神秘文件ZZZXXX》（教基厅函〔9999〕99号）",
+            entities=[],
+        )
+        D.search_in_reference([it], [_ref("ref.txt", ref)])
+        assert "✗" in it["状态"] or "未找到" in it["状态"], \
+            f"文件名不存在时应为未找到，实际: {it['状态']}"
+
+    def test_normal_statement_still_triggers_cooccurrence_check(self):
+        """
+        非「政策依据：」的普通表述仍然走共现检查
+        → 实体张冠李戴时应降级为 △ 数据不一致
+        """
+        kw = "教学改革"
+        entity = "特殊研究所ZZZABC"
+        ref_text = (
+            f"学校坚持{kw}，成效显著，持续推进教育创新。"
+            + "X" * 600
+            + f"{entity}成立于2020年，专注前沿研究。"
+        )
+        it = {
+            "表述内容": f"{kw}推动{entity}取得突破",  # 不以「政策依据：」开头
+            "命中数字": [],
+            "命中实体": [entity],
+            "子命题": [],
+            "状态": "✗ 未找到",
+            "反向验证警告": "",
+            "出处": "", "匹配上下文简述": "", "原文片段": "", "匹配关键词": "",
+        }
+        D.search_in_reference([it], [_ref("ref.txt", ref_text)])
+        # 普通表述仍然走共现检查；若命中则应检测到张冠李戴
+        if "✓" in it.get("状态", ""):
+            assert "数据不一致" in it["状态"] or "不匹配" in it.get("反向验证警告", ""), \
+                f"普通表述的张冠李戴仍应被检测，实际: {it['状态']}"
+
+    def test_policy_ref_keyword_found_confirmed_not_inconsistent(self):
+        """
+        「政策依据：」行的关键词能在参考库找到
+        → 状态应为 ✓ 已确认，不是 △ 数据不一致
+        """
+        ref = "关于进一步加强和规范教育收费管理的意见全文内容，包含具体要求。"
+        it = self._policy_item(
+            query="- 政策依据： 教育部等五部门《关于进一步加强和规范教育收费管理的意见》（教财〔2020〕5号）、财政部《中小学校财务制度》（财教〔2022〕159号）",
+            entities=["中小学校财务制度"],
+        )
+        D.search_in_reference([it], [_ref("ref.txt", ref)])
+        assert "✓" in it["状态"], \
+            f"政策依据行关键词命中应为已确认，实际: {it['状态']}"
+        assert "数据不一致" not in it["状态"]
+
+
 class TestGetContextSnippetEdgeCases:
     def test_newline_replaced(self):
         text = "学校\n获批\n356项"

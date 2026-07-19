@@ -792,8 +792,9 @@ def search_in_reference(texts, references):
                         item["状态"] = "\u25b3 \u6570\u636e\u4e0d\u4e00\u81f4"
 
             # === v3.1: 实体-语境共现验证 ===
-            # 即使实体覆盖率100%，也需检查实体是否与匹配关键词在同一语境
-            if matched_kw:
+            # 「政策依据：」行是多文件并列引用，跨文件引用合法，跳过共现检查
+            is_policy_ref = bool(re.match(r'^[-\s]*政策依据[：:]', query))
+            if matched_kw and not is_policy_ref:
                 misattributed, cooccurring = verify_entity_context_cooccurrence(
                     all_entities, matched_kw, references
                 )
