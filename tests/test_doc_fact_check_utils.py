@@ -192,6 +192,43 @@ class TestGetCategoryPatterns:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# find_txt_refs — 递归扫描 .txt 参考文件
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestFindTxtRefs:
+    def test_finds_txt_files(self, tmp_path):
+        (tmp_path / "a.txt").write_text("内容A", encoding="utf-8")
+        (tmp_path / "b.txt").write_text("内容B", encoding="utf-8")
+        result = D.find_txt_refs(str(tmp_path))
+        basenames = [os.path.basename(p) for p in result]
+        assert "a.txt" in basenames
+        assert "b.txt" in basenames
+
+    def test_finds_txt_recursively(self, tmp_path):
+        sub = tmp_path / "subdir"
+        sub.mkdir()
+        (sub / "deep.txt").write_text("内容", encoding="utf-8")
+        result = D.find_txt_refs(str(tmp_path))
+        assert any("deep.txt" in p for p in result)
+
+    def test_ignores_non_txt(self, tmp_path):
+        (tmp_path / "a.docx").write_bytes(b"fake")
+        (tmp_path / "b.pdf").write_bytes(b"fake")
+        result = D.find_txt_refs(str(tmp_path))
+        assert result == []
+
+    def test_empty_dir(self, tmp_path):
+        result = D.find_txt_refs(str(tmp_path))
+        assert result == []
+
+    def test_returns_sorted(self, tmp_path):
+        (tmp_path / "z.txt").write_text("Z", encoding="utf-8")
+        (tmp_path / "a.txt").write_text("A", encoding="utf-8")
+        result = D.find_txt_refs(str(tmp_path))
+        assert result == sorted(result)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # _extract_attr_words  &  check_intra_document_consistency
 # ──────────────────────────────────────────────────────────────────────────────
 

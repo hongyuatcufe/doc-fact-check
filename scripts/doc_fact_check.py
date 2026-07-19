@@ -94,6 +94,13 @@ def find_doc_files(ref_dir):
     return sorted(set(files))
 
 
+def find_txt_refs(ref_dir):
+    """在目录中递归查找所有 .txt 参考文件（已转换好的，无需再经 pandoc）"""
+    found = glob.glob(os.path.join(ref_dir, "*.txt"))
+    found += glob.glob(os.path.join(ref_dir, "**", "*.txt"), recursive=True)
+    return sorted(set(found))
+
+
 # ── 表述提取 ──────────────────────────────────────────────
 
 _NUMERIC_SUFFIXES = (
@@ -1086,6 +1093,18 @@ def cmd_full_check():
         with open(txt_path, 'r', encoding='utf-8') as f:
             ref_texts[txt_path] = f.read()
         print(f"  \u2192 {os.path.basename(doc)}")
+
+    # 直接读入已有 .txt 参考文件（无需 pandoc 转换）
+    txt_ref_files = find_txt_refs(ref_dir)
+    txt_only = [p for p in txt_ref_files if p not in ref_texts]
+    if txt_only:
+        print(f"  直接读取 {len(txt_only)} 个 .txt 参考文件")
+        for txt_path in txt_only:
+            try:
+                with open(txt_path, 'r', encoding='utf-8') as f:
+                    ref_texts[txt_path] = f.read()
+            except Exception as e:
+                print(f"  [跳过] {os.path.basename(txt_path)}: {e}")
 
     # Step 2: 提取表述
     print("\n" + "=" * 60)
