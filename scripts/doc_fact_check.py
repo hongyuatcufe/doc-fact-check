@@ -1161,7 +1161,7 @@ def print_summary(statements, stage="第一轮自动核对"):
     print(f"  \u2717 未找到:   {not_found}")
     if suspicious:
         print(f"{'='*60}")
-        print(f"\u26a0 反向验证警告: {suspicious} 条\u300c已确认\u300d条目存在潜在问题")
+        print(f"\u26a0 反向验证警告: {suspicious} 条表述存在潜在问题，需重点复查")
         print(f"  请在 Markdown 报告\u300c反向验证重点关注\u300d章节逐条复查")
         print(f"{'='*60}")
 

@@ -285,11 +285,20 @@ class TestAdjudicateItemWithMockLLM:
             A.adjudicate_item(item, [self.CANDIDATE])
         assert item.get("判定理由") == "数字完全匹配"
 
-    def test_reasoning_appended_to_warning(self):
+    def test_confirmed_reasoning_only_in_判定理由(self):
+        # confirmed verdict: reasoning stored in 判定理由, NOT 反向验证警告
         with patch("adjudicate._call_llm", return_value={"verdict": "confirmed", "citation": "", "reasoning": "LLM确认无误"}):
             item = self._item()
             A.adjudicate_item(item, [self.CANDIDATE])
-        assert "LLM确认无误" in item.get("反向验证警告", "")
+        assert item.get("判定理由") == "LLM确认无误"
+        assert "LLM确认无误" not in item.get("反向验证警告", "")
+
+    def test_needs_review_reasoning_appended_to_warning(self):
+        # needs_review verdict: reasoning also goes into 反向验证警告
+        with patch("adjudicate._call_llm", return_value={"verdict": "needs_review", "citation": "", "reasoning": "数字出入较大"}):
+            item = self._item()
+            A.adjudicate_item(item, [self.CANDIDATE])
+        assert "数字出入较大" in item.get("反向验证警告", "")
 
     def test_unknown_verdict_preserves_status(self):
         with patch("adjudicate._call_llm", return_value={"verdict": "unknown_xyz", "citation": "", "reasoning": ""}):
@@ -553,7 +562,8 @@ class TestAdjudicateBatch:
                 A.adjudicate_batch([item], verbose=False)
         assert item.get("判定引用") == "引用文本"
         assert item.get("判定理由") == "判定理由"
-        assert "判定理由" in item.get("反向验证警告", "")
+        # confirmed verdict: reasoning only in 判定理由, not in 反向验证警告
+        assert "判定理由" not in item.get("反向验证警告", "")
 
     def test_missing_index_in_results_appends_fallback(self):
         item = self._not_found_item()

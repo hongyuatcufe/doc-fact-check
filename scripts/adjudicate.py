@@ -159,11 +159,9 @@ def adjudicate_item(item: dict, candidates: list[dict]) -> dict:
     if reasoning:
         item["判定理由"] = reasoning
 
-    # 把判定理由追加到反向验证警告里，方便 Excel 显示
-    if reasoning:
-        existing = item.get("反向验证警告", "")
-        tag = f"[LLM判定] {reasoning}"
-        item["反向验证警告"] = f"{existing}; {tag}".lstrip("; ") if existing else tag
+    # 只在有问题的 verdict 时才追加警告，避免 confirmed 条目膨胀计数
+    if reasoning and verdict in ("needs_review", "inconsistent"):
+        _append_note(item, f"[LLM判定] {reasoning}")
 
     return item
 
@@ -387,9 +385,8 @@ def adjudicate_batch(items: list, batch_size: int = 6, verbose: bool = True) -> 
                 item["判定引用"] = citation
             if reasoning:
                 item["判定理由"] = reasoning
-                existing = item.get("反向验证警告", "")
-                tag = f"[LLM判定] {reasoning}"
-                item["反向验证警告"] = f"{existing}; {tag}".lstrip("; ") if existing else tag
+                if verdict in ("needs_review", "inconsistent"):
+                    _append_note(item, f"[LLM判定] {reasoning}")
 
         done += len(batch)
         if verbose and done % (batch_size * 2) == 0:
