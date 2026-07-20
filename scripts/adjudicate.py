@@ -243,7 +243,8 @@ def _build_batch_msg(batch: list) -> str:
         if entities:
             line += f"（专名：{', '.join(entities)}）"
         if sub and len(sub) > 1:
-            line += f"（子命题：{'；'.join(sub)}）"
+            sub_texts = [s["text"] if isinstance(s, dict) else s for s in sub]
+            line += f"（子命题：{'；'.join(sub_texts)}）"
         parts.append(line)
 
         if evidence:
