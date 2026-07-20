@@ -24,9 +24,10 @@
 再无 jieba 则回退到 v3 的正则抽取（保证任何环境都能出结果）。
 
 用法:
-  python3 factcheck_llm.py <目标文档> <参考文档目录> [输出Excel路径]
-  python3 factcheck_llm.py --offline <目标文档> <参考文档目录> [输出Excel路径]   # 强制离线(jieba/正则)
-  python3 factcheck_llm.py --regenerate <json路径> [输出Excel路径]              # 复用 v3 重生成
+  python3 factcheck_llm.py <目标文档> <参考文档目录> [输出报告.md]
+  python3 factcheck_llm.py --offline <目标文档> <参考文档目录> [输出报告.md]   # 强制离线(jieba/正则)
+  python3 factcheck_llm.py --excel <目标文档> <参考文档目录>                    # 附加生成 Excel
+  python3 factcheck_llm.py --regenerate <json路径> [输出报告.md]               # 复用 v3 重生成
 支持的文档格式同 v3：docx / doc / pdf / md / txt。
 """
 
@@ -280,7 +281,7 @@ def extract_claims_offline(target_txt):
 
 
 # ── 主流程 ────────────────────────────────────────────────
-def run(target_doc, ref_dir, output_xlsx="核对清单.xlsx", force_offline=False):
+def run(target_doc, ref_dir, output_md="", want_excel=False, force_offline=False):
     txt_dir = os.path.join(os.path.dirname(target_doc) or ".", "txt_output")
     os.makedirs(txt_dir, exist_ok=True)
 
@@ -335,35 +336,43 @@ def run(target_doc, ref_dir, output_xlsx="核对清单.xlsx", force_offline=Fals
     print(f"反向验证报告已保存: {rev_path}")
 
     print("\n" + "=" * 60)
-    print("Step 5: 生成 Excel 核对清单")
+    print("Step 5: 生成核对报告")
     print("=" * 60)
-    if not output_xlsx.startswith("/"):
-        output_xlsx = os.path.join(os.path.dirname(target_doc) or ".", output_xlsx)
-    v3.generate_excel(statements, output_xlsx)
+    doc_basename = os.path.splitext(os.path.basename(target_doc))[0]
+    base_dir = os.path.dirname(target_doc) or "."
+    if not output_md:
+        output_md = os.path.join(base_dir, f"{doc_basename}_核对清单.md")
+    elif not os.path.isabs(output_md):
+        output_md = os.path.join(base_dir, output_md)
+    v3.generate_markdown(statements, output_md, doc_name=doc_basename,
+                         ref_count=len(ref_texts))
+    if want_excel:
+        output_xlsx = os.path.splitext(output_md)[0] + ".xlsx"
+        v3.generate_excel(statements, output_xlsx)
     v3.print_summary(statements)
 
 
 def main():
     args = sys.argv[1:]
     if args and args[0] == "--regenerate":
-        # 直接复用 v3 的重生成
         sys.argv = [sys.argv[0]] + args
         v3.cmd_regenerate()
         return
     if args and args[0] in ("--help", "-h"):
         print(__doc__)
         return
-    force_offline = False
-    if args and args[0] == "--offline":
-        force_offline = True
-        args = args[1:]
-    if len(args) < 2:
+    flags = [a for a in args if a.startswith("--")]
+    pos   = [a for a in args if not a.startswith("--")]
+    force_offline = "--offline" in flags
+    want_excel    = "--excel"   in flags
+    if len(pos) < 2:
         print(__doc__)
         sys.exit(1)
-    target = args[0]
-    ref_dir = args[1]
-    out = args[2] if len(args) > 2 else "核对清单.xlsx"
-    run(target, ref_dir, out, force_offline=force_offline)
+    target  = pos[0]
+    ref_dir = pos[1]
+    out_md  = pos[2] if len(pos) > 2 else ""
+    run(target, ref_dir, output_md=out_md, want_excel=want_excel,
+        force_offline=force_offline)
 
 
 if __name__ == "__main__":

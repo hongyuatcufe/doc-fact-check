@@ -201,6 +201,203 @@ def _append_note(item: dict, note: str) -> None:
     item["反向验证警告"] = f"{existing}; {note}".lstrip("; ") if existing else note
 
 
+# ── 批量判定 ──────────────────────────────────────────────────
+
+_BATCH_SYS_PROMPT = """\
+你是公文事实核查的"批量判定助手"。给你若干条编号声明，每条附参考证据片段，
+逐条判断参考证据是否支持该声明（只凭给定证据，不依赖常识）。
+
+【判定规则】
+- confirmed：证据明确支持全部要素（主体/数字/专名/口径），给出引用原文
+- needs_review：部分支持/名称近似/子命题未全覆盖/多源口径不一
+- inconsistent：同主体同口径下证据与声明直接冲突，给出冲突原文
+- not_found：给定证据中无任何支持（≠ 声明为假）
+
+【严格禁止】不得用常识判断；不得把列举视为冲突；无证据时选 not_found 而非猜测。
+
+【输出格式】严格 JSON 对象，不加代码块：
+{"results": [
+  {"index": 1, "verdict": "confirmed|needs_review|inconsistent|not_found",
+   "citation": "最关键证据原文≤80字，confirmed/inconsistent必填其余可空",
+   "reasoning": "判定理由≤40字"}
+]}
+每条 index 与输入编号一一对应，不得遗漏或新增。
+"""
+
+
+def _build_batch_msg(batch: list) -> str:
+    """
+    batch: list of (item_dict, evidence_list)
+    evidence_list: [{"sourcePath": ..., "text": ...}, ...]
+    """
+    parts = []
+    for i, (item, evidence) in enumerate(batch, 1):
+        claim    = item.get("表述内容", "")
+        numbers  = item.get("命中数字", [])
+        entities = item.get("命中实体", [])
+        sub      = item.get("子命题", [])
+
+        line = f"【声明 {i}】{claim}"
+        if numbers:
+            line += f"（数字：{', '.join(numbers)}）"
+        if entities:
+            line += f"（专名：{', '.join(entities)}）"
+        if sub and len(sub) > 1:
+            line += f"（子命题：{'；'.join(sub)}）"
+        parts.append(line)
+
+        if evidence:
+            parts.append("【证据】")
+            for j, ev in enumerate(evidence[:3], 1):
+                src  = ev.get("sourcePath", "未知来源")
+                text = ev.get("text", "")[:300]
+                parts.append(f"  [{j}]{src}: {text}")
+        else:
+            parts.append("【证据】（无候选证据）")
+        parts.append("")
+    return "\n".join(parts)
+
+
+def _call_llm_batch(user_msg: str, n_items: int, timeout: int = 90) -> list | None:
+    """
+    批量 LLM 调用，返回 results 列表（长度 = n_items）或 None（失败）。
+    """
+    key, base, model = _llm_config()
+    if not key:
+        return None
+    max_tokens = max(600, n_items * 160)
+    payload = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _BATCH_SYS_PROMPT},
+            {"role": "user",   "content": user_msg},
+        ],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }).encode()
+    req = urllib.request.Request(
+        f"{base.rstrip('/')}/chat/completions",
+        data=payload,
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {key}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read())
+        content = body["choices"][0]["message"]["content"]
+        content = re.sub(r"^```json\s*|```\s*$", "", content.strip(), flags=re.MULTILINE)
+        data = json.loads(content)
+        results = data.get("results", [])
+        if isinstance(results, list):
+            return results
+        return None
+    except Exception:
+        return None
+
+
+def _select_evidence(item: dict) -> list:
+    """
+    为条目选取证据列表：
+    - 优先用 候选证据 字段（retrieval 结果）
+    - 其次把 原文片段 包装成单条证据
+    """
+    cands = item.get("候选证据")
+    if cands:
+        return cands[:3]
+    snippet = item.get("原文片段", "").strip()
+    if snippet:
+        return [{"sourcePath": item.get("出处", ""), "text": snippet}]
+    return []
+
+
+def adjudicate_batch(items: list, batch_size: int = 6, verbose: bool = True) -> None:
+    """
+    批量 LLM 判定，N/batch_size 次 API 调用（默认 6 条/批）。
+
+    判定范围：
+    - 「✗ 未找到」且有候选证据（retrieval 找到的候选块）
+    - 「△」状态或有反向验证警告，且有原文片段
+
+    降级安全：整批 LLM 失败时保留原规则结果，附注"未经 LLM 复核"。
+    """
+    key, _, model = _llm_config()
+    if not key:
+        if verbose:
+            print("  [LLM批判定] 无 API key，跳过（维持规则结果）")
+        return
+
+    queue = []
+    for item in items:
+        status      = item.get("状态", "")
+        has_warning = bool(item.get("反向验证警告", ""))
+        evidence    = _select_evidence(item)
+        if not evidence:
+            continue
+        if "✗" in status:          # ✗ 未找到 + 有候选证据
+            queue.append((item, evidence))
+        elif "△" in status or has_warning:  # △ 或有警告
+            queue.append((item, evidence))
+
+    if not queue:
+        if verbose:
+            print("  [LLM批判定] 无需判定的条目")
+        return
+
+    total = len(queue)
+    if verbose:
+        print(f"  [LLM批判定] {total} 条待判定，"
+              f"批大小={batch_size}，模型={model}，"
+              f"预计 {-(-total // batch_size)} 次 API 调用")
+
+    done = 0
+    for start in range(0, total, batch_size):
+        batch = queue[start:start + batch_size]
+        user_msg = _build_batch_msg(batch)
+        results  = _call_llm_batch(user_msg, len(batch))
+
+        if results is None:
+            for item, _ in batch:
+                _append_note(item, "LLM 批判定失败，维持规则结果")
+            done += len(batch)
+            continue
+
+        # 按 index 应用结果（容错：index 可能缺失或越界）
+        result_map = {}
+        for r in results:
+            idx = r.get("index")
+            if isinstance(idx, int) and 1 <= idx <= len(batch):
+                result_map[idx] = r
+
+        for i, (item, _) in enumerate(batch, 1):
+            r = result_map.get(i)
+            if r is None:
+                _append_note(item, "LLM 批判定未返回此条结果，维持规则结果")
+                continue
+            verdict = r.get("verdict", "")
+            if verdict not in _STATUS_MAP:
+                _append_note(item, f"LLM 返回未知 verdict={verdict!r}，维持规则结果")
+                continue
+            item["状态"] = _STATUS_MAP[verdict]
+            citation  = r.get("citation", "").strip()
+            reasoning = r.get("reasoning", "").strip()
+            if citation:
+                item["判定引用"] = citation
+            if reasoning:
+                item["判定理由"] = reasoning
+                existing = item.get("反向验证警告", "")
+                tag = f"[LLM判定] {reasoning}"
+                item["反向验证警告"] = f"{existing}; {tag}".lstrip("; ") if existing else tag
+
+        done += len(batch)
+        if verbose and done % (batch_size * 2) == 0:
+            print(f"  [LLM批判定] {done}/{total}")
+
+    if verbose:
+        print(f"  [LLM批判定] 完成，共判定 {done} 条")
+
+
 # ── 烟雾测试 ──────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys

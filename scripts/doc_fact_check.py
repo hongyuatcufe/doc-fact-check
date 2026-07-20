@@ -717,6 +717,9 @@ def search_in_reference(texts, references):
             try:
                 candidates = _ret_mod.retrieve(
                     query, all_numbers, all_entities, _ret_index, top_k=5)
+                # 始终保存候选证据：即使关键词未命中，LLM 判定层也能用
+                if candidates:
+                    item["候选证据"] = candidates[:5]
                 for cand in candidates:
                     ref_name = cand["sourcePath"]
                     if ref_name not in index:
@@ -738,8 +741,6 @@ def search_in_reference(texts, references):
                     matched_ref = ref_name
                     matched_content = ref_content
                     found_any = True
-                    # 保存候选证据供 Stage 3 判定层使用
-                    item["候选证据"] = candidates[:5]
                     break
             except Exception:
                 pass  # 降级到子串
@@ -1275,7 +1276,7 @@ def cmd_full_check():
         print("=" * 60)
         try:
             import adjudicate as _adj
-            _adj.adjudicate_all(statements, verbose=True)
+            _adj.adjudicate_batch(statements, verbose=True)
         except ImportError:
             print("  ⚠ adjudicate.py 未找到，跳过 LLM 判定")
     else:

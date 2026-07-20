@@ -371,3 +371,234 @@ class TestAppendNote:
         item = {"反向验证警告": ""}
         A._append_note(item, "内容")
         assert not item["反向验证警告"].startswith(";")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _build_batch_msg
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestBuildBatchMsg:
+    def _item(self, text="声明A", numbers=None, entities=None):
+        return {
+            "表述内容": text,
+            "命中数字": numbers or [],
+            "命中实体": entities or [],
+            "子命题": [],
+        }
+
+    def _ev(self, text="证据文本", src="ref.txt"):
+        return {"sourcePath": src, "text": text}
+
+    def test_contains_numbered_claims(self):
+        batch = [(self._item("声明一"), [self._ev()]),
+                 (self._item("声明二"), [self._ev()])]
+        msg = A._build_batch_msg(batch)
+        assert "【声明 1】" in msg
+        assert "【声明 2】" in msg
+
+    def test_numbers_and_entities_appended(self):
+        item = self._item(numbers=["99%"], entities=["特殊单位名"])
+        msg = A._build_batch_msg([(item, [self._ev()])])
+        assert "99%" in msg
+        assert "特殊单位名" in msg
+
+    def test_evidence_text_included(self):
+        msg = A._build_batch_msg([(self._item(), [self._ev("独特证据内容XYZ")])])
+        assert "独特证据内容XYZ" in msg
+
+    def test_no_evidence_placeholder(self):
+        msg = A._build_batch_msg([(self._item(), [])])
+        assert "无候选证据" in msg
+
+    def test_max_three_evidence_per_item(self):
+        evs = [self._ev(f"证据{i}") for i in range(5)]
+        msg = A._build_batch_msg([(self._item(), evs)])
+        assert "证据0" in msg
+        assert "证据1" in msg
+        assert "证据2" in msg
+        assert "证据3" not in msg
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _select_evidence
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestSelectEvidence:
+    def test_prefers_candidates_field(self):
+        item = {
+            "候选证据": [{"sourcePath": "a.txt", "text": "候选内容", "score": 0.9}],
+            "原文片段": "原文内容",
+            "出处": "b.txt",
+        }
+        ev = A._select_evidence(item)
+        assert ev[0]["text"] == "候选内容"
+
+    def test_falls_back_to_snippet(self):
+        item = {"原文片段": "有用的原文片段", "出处": "ref.txt"}
+        ev = A._select_evidence(item)
+        assert len(ev) == 1
+        assert ev[0]["text"] == "有用的原文片段"
+        assert ev[0]["sourcePath"] == "ref.txt"
+
+    def test_empty_when_no_evidence(self):
+        item = {"原文片段": "", "出处": ""}
+        ev = A._select_evidence(item)
+        assert ev == []
+
+    def test_candidates_capped_at_three(self):
+        item = {
+            "候选证据": [{"sourcePath": f"{i}.txt", "text": f"候选{i}", "score": 0.9}
+                        for i in range(5)]
+        }
+        ev = A._select_evidence(item)
+        assert len(ev) == 3
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# adjudicate_batch — degradation & selection paths (no real API)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestAdjudicateBatch:
+    def setup_method(self):
+        self._orig_key  = os.environ.pop("FACTCHECK_LLM_API_KEY", None)
+        self._orig_deep = os.environ.pop("DEEPSEEK_API_KEY", None)
+
+    def teardown_method(self):
+        if self._orig_key  is not None: os.environ["FACTCHECK_LLM_API_KEY"] = self._orig_key
+        if self._orig_deep is not None: os.environ["DEEPSEEK_API_KEY"]       = self._orig_deep
+
+    def _confirmed_item(self, warning=""):
+        return {
+            "表述内容": "测试声明", "命中数字": [], "命中实体": [], "子命题": [],
+            "状态": "✓ 已确认", "反向验证警告": warning,
+            "出处": "ref.txt", "原文片段": "参考文本内容", "候选证据": [],
+        }
+
+    def _not_found_item(self, with_candidates=True):
+        item = {
+            "表述内容": "未找到声明", "命中数字": [], "命中实体": [], "子命题": [],
+            "状态": "✗ 未找到", "反向验证警告": "",
+            "出处": "", "原文片段": "",
+        }
+        if with_candidates:
+            item["候选证据"] = [{"sourcePath": "ref.txt", "text": "相关候选文本", "score": 0.7}]
+        return item
+
+    def test_no_api_key_does_not_raise(self, capsys):
+        items = [self._not_found_item()]
+        A.adjudicate_batch(items, verbose=True)
+
+    def test_no_api_key_prints_skip_message(self, capsys):
+        A.adjudicate_batch([self._not_found_item()], verbose=True)
+        out = capsys.readouterr().out
+        assert "跳过" in out or "无 API key" in out
+
+    def test_no_api_key_preserves_status(self):
+        item = self._not_found_item()
+        A.adjudicate_batch([item], verbose=False)
+        assert item["状态"] == "✗ 未找到"
+
+    def test_items_without_evidence_skipped(self):
+        item = self._not_found_item(with_candidates=False)
+        item["原文片段"] = ""
+        A.adjudicate_batch([item], verbose=False)
+        assert "判定" not in item.get("反向验证警告", "")
+
+    def test_confirmed_no_warning_skipped(self):
+        item = self._confirmed_item(warning="")
+        A.adjudicate_batch([item], verbose=False)
+        assert "判定" not in item.get("反向验证警告", "")
+
+    def test_confirmed_with_warning_selected(self):
+        item = self._confirmed_item(warning="增长率未独立验证")
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_llm_batch", return_value=[
+                {"index": 1, "verdict": "needs_review", "citation": "", "reasoning": "部分支持"}
+            ]):
+                A.adjudicate_batch([item], verbose=False)
+        assert "△" in item["状态"]
+
+    def test_not_found_with_candidates_selected(self):
+        item = self._not_found_item(with_candidates=True)
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_llm_batch", return_value=[
+                {"index": 1, "verdict": "confirmed", "citation": "相关候选文本", "reasoning": "证据支持"}
+            ]):
+                A.adjudicate_batch([item], verbose=False)
+        assert "✓" in item["状态"]
+
+    def test_batch_llm_failure_appends_note(self):
+        item = self._not_found_item()
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_llm_batch", return_value=None):
+                A.adjudicate_batch([item], verbose=False)
+        assert "失败" in item.get("反向验证警告", "") or "维持规则结果" in item.get("反向验证警告", "")
+
+    def test_unknown_verdict_appends_note(self):
+        item = self._not_found_item()
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_llm_batch", return_value=[
+                {"index": 1, "verdict": "bogus_verdict", "citation": "", "reasoning": ""}
+            ]):
+                A.adjudicate_batch([item], verbose=False)
+        assert item["状态"] == "✗ 未找到"  # 原状态不变
+        assert "未知 verdict" in item.get("反向验证警告", "") or "维持规则结果" in item.get("反向验证警告", "")
+
+    def test_citation_and_reasoning_written(self):
+        item = self._not_found_item()
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_llm_batch", return_value=[
+                {"index": 1, "verdict": "confirmed", "citation": "引用文本", "reasoning": "判定理由"}
+            ]):
+                A.adjudicate_batch([item], verbose=False)
+        assert item.get("判定引用") == "引用文本"
+        assert item.get("判定理由") == "判定理由"
+        assert "判定理由" in item.get("反向验证警告", "")
+
+    def test_missing_index_in_results_appends_fallback(self):
+        item = self._not_found_item()
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_llm_batch", return_value=[]):
+                A.adjudicate_batch([item], verbose=False)
+        assert "未返回此条结果" in item.get("反向验证警告", "") or "维持规则结果" in item.get("反向验证警告", "")
+
+    def test_empty_items_list(self):
+        A.adjudicate_batch([], verbose=False)  # 不应抛出
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# search_in_reference: 候选证据对「✗ 未找到」条目也应存储
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestCandidatesStoredForNotFound:
+    """retrieval.py 存在时，即使关键词未命中，「✗ 未找到」条目也应有候选证据字段。"""
+
+    def _item(self, query):
+        return {
+            "表述内容": query, "命中数字": [], "命中实体": [], "子命题": [],
+            "状态": "✗ 未找到", "反向验证警告": "",
+            "出处": "", "原文片段": "", "匹配关键词": "", "匹配上下文简述": "",
+        }
+
+    def test_candidates_stored_even_when_kw_miss(self):
+        """retrieval 找到候选但无关键词命中时，候选证据字段仍写入。"""
+        import doc_fact_check as D
+
+        item = self._item("完全独特的测试表述XYZ_UNIQUE")
+        ref_text = "学校获批经费一百万，项目推进顺利。" * 30
+
+        fake_candidates = [
+            {"sourcePath": "/fake/ref.txt", "text": ref_text[:300], "score": 0.5}
+        ]
+
+        import retrieval as _ret
+        import unittest.mock as mock
+
+        fake_index = mock.MagicMock()
+        with mock.patch.object(_ret, "build_index", return_value=fake_index):
+            with mock.patch.object(_ret, "retrieve", return_value=fake_candidates):
+                D.search_in_reference([item], [("/fake/ref.txt", ref_text)])
+
+        assert item["状态"] == "✗ 未找到"
+        assert "候选证据" in item, "候选证据字段应存在，即使关键词未命中"
+        assert len(item["候选证据"]) > 0
