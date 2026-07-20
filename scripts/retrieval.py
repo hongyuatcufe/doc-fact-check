@@ -24,8 +24,11 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # ─── 分块参数 ─────────────────────────────────────────────────────────────────
-_CHUNK_TARGET = 1200   # 目标块长（字符数）
+_CHUNK_TARGET = 600    # 目标块长（字符数）
 _CHUNK_OVERLAP = 150   # 相邻块重叠（字符数）
+
+# 从 claim 提取内容词的正则（2-6 个连续 CJK 字符）
+_CJK_WORD_RE = re.compile(r'[一-鿿]{2,6}')
 
 # ─── 数据结构 ──────────────────────────────────────────────────────────────────
 
@@ -333,6 +336,16 @@ def retrieve(
             exact_terms.append(t)
             seen_terms.add(t)
             query_terms.append(t)
+
+    # claim 内容词：从 claim 提取 2-6 字 CJK 词，补充实体未覆盖的区分性词汇
+    # 例："防性侵六个一" → 补入"防性侵"（"六个一"已在实体里）
+    claim_words = sorted(set(_CJK_WORD_RE.findall(claim)), key=len, reverse=True)
+    for w in claim_words:
+        # 跳过已被更长词覆盖的子串，避免冗余查询
+        if any(w in t for t in seen_terms):
+            continue
+        seen_terms.add(w)
+        query_terms.append(w)  # 权重同 exactTerm（1x）
 
     # 2. 对每个查询词检索，汇总得分（RRF-lite：每个词贡献倒数排名分）
     # 格式：{chunk_id: cumulative_score}

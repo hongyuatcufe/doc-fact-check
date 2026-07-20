@@ -207,11 +207,15 @@ _BATCH_SYS_PROMPT = """\
 
 【判定规则】
 - confirmed：证据明确支持全部要素（主体/数字/专名/口径），给出引用原文
-- needs_review：部分支持/名称近似/子命题未全覆盖/多源口径不一
+- needs_review：部分支持/名称近似/数字或口径有出入/多源说法不一
 - inconsistent：同主体同口径下证据与声明直接冲突，给出冲突原文
 - not_found：给定证据中无任何支持（≠ 声明为假）
 
-【严格禁止】不得用常识判断；不得把列举视为冲突；无证据时选 not_found 而非猜测。
+【关键注意】
+1. 先读懂声明的主题（如"防性侵"），再在证据中找同主题内容，不得因关键词相同但
+   主题不同而判 confirmed（例："防性侵六个一"≠"近视防控六个一"）。
+2. 证据片段可能包含多个不相关条目，需找到与声明主题匹配的那条。
+3. 不得用常识判断；无证据时选 not_found 而非猜测。
 
 【输出格式】严格 JSON 对象，不加代码块：
 {"results": [
@@ -249,7 +253,7 @@ def _build_batch_msg(batch: list) -> str:
             parts.append("【证据】")
             for j, ev in enumerate(evidence[:3], 1):
                 src  = ev.get("sourcePath", "未知来源")
-                text = ev.get("text", "")[:300]
+                text = ev.get("text", "")[:500]
                 parts.append(f"  [{j}]{src}: {text}")
         else:
             parts.append("【证据】（无候选证据）")
