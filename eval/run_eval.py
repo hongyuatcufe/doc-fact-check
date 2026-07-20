@@ -388,14 +388,14 @@ def main():
         json_path = Path(args.json)
         print(f"使用已有管线输出: {json_path}")
     else:
-        json_path = DEFAULT_JSON_OUTPUT
         pipeline_path = Path(args.pipeline)
+        target = Path(args.target)
+        ref_dir = Path(args.ref_dir)
+        # JSON 输出路径与管线一致：<target 所在目录>/txt_output/checklist_result.json
+        json_path = target.parent / "txt_output" / "checklist_result.json"
 
         # Run pipeline if needed
         if args.rerun or not json_path.exists():
-            target = Path(args.target)
-            ref_dir = Path(args.ref_dir)
-
             if not target.exists():
                 print(f"[错误] 目标文档不存在: {target}", file=sys.stderr)
                 print("  请使用 --target 指定目标文档路径，或先手动运行管线")
