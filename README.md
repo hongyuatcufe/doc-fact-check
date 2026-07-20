@@ -3,7 +3,7 @@
 ## 中文
 
 文档表述准确性核对工具 —— 将目标文档中的每条定性和定量表述与参考文档逐一比对，
-通过**自动初查 → 人工复检 → 反向验证**三轮闭环，生成带颜色标注的 Excel 核对清单。
+通过**自动初查 → 人工复检 → 反向验证**三轮闭环，生成 Markdown 核对报告。
 
 ### 特性
 
@@ -14,10 +14,10 @@
 - 🏷️ **假✓降级（v3.3）**：仅靠过短/高频通用词命中且无数字/专名佐证的"✓"自动降级为「△ 需核实」，防止静默假✓
 - 🔍 在参考文档中全文检索每条表述的出处，并辅以反向验证警告
 - 🏷️ 标记每条表述的状态：已确认 / 需核实 / 部分匹配 / 数据不一致 / 未找到
-- 📊 输出带颜色标注的 Excel 核对清单（5 个工作表，含实体覆盖分析）
-- 🔄 支持 `--regenerate` 模式：人工修改 JSON 后直接重生成 Excel，无需重新转换
+- 📄 输出 Markdown 核对报告（重要优先：✗ → ⚠△ → ✓折叠），可选附加 `--excel`
+- 🔄 支持 `--regenerate` 模式：人工修改 JSON 后直接重新生成报告，无需重新转换文档
 - 📋 自动生成反向验证报告，标记潜在误匹配供第三轮重点关注
-- 📄 支持 `.doc` 文件自动回退（macOS 上用 textutil 转换）
+- 📄 支持 `.txt` 参考文件直接读入（无需 pandoc）；`.doc` 文件 macOS 上用 textutil 自动转换
 
 ### 三轮复核法
 
@@ -37,28 +37,37 @@
 ### 依赖
 
 ```bash
-brew install pandoc          # macOS
-pip install openpyxl
+brew install pandoc          # macOS（转换 .docx/.doc 参考文件用）
 pip install pyyaml           # 可选：加载 entity_config.yaml 类别词（缺失时回退内置默认）
+pip install openpyxl         # 可选：仅在使用 --excel 时需要
 ```
 
 ### 使用方式
+
+#### 命令行
+
+```bash
+# 第一轮：自动核对 → 生成 {文档名}_核对清单.md
+python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/"
+
+# 指定输出路径
+python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" "报告.md"
+
+# 同时附加 Excel
+python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" --excel
+
+# 人工修改 JSON 后重新生成报告
+python3 scripts/doc_fact_check.py --regenerate txt_output/checklist_result.json
+
+# --llm-judge：启用 LLM 第三轮判定层
+python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" --llm-judge
+```
 
 #### 在 Qoder / Pi CLI 中调用
 
 在会话中直接说明需求即可，此 Skill 会自动触发。例如：
 
 > 帮我核验这份工作总结中的表述是否都能在参考文档里找到出处
-
-#### 命令行
-
-```bash
-# 第一轮：自动核对
-python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" "核对清单.xlsx"
-
-# 人工复查后重生成 Excel
-python3 scripts/doc_fact_check.py --regenerate txt_output/checklist_result.json "核对清单.xlsx"
-```
 
 ### 核对标记说明
 
@@ -70,19 +79,18 @@ python3 scripts/doc_fact_check.py --regenerate txt_output/checklist_result.json 
 | △ 数据不一致 | 数据或表述与原始文档有差异 |
 | ✗ 未找到 | 所有参照文档均未出现该表述 |
 
-### Excel 输出说明
+### Markdown 报告结构
 
-| 工作表 | 内容 |
-|--------|------|
-| 全部核对结果 | 所有表述的完整核对状态、出处、原文片段、反向验证警告 |
-| 已确认表述 | 仅列出 ✓ 已确认 的条目 |
-| 待核实表述 | 未找到 或 需进一步确认 的条目 |
-| 反向验证重点关注 | 存在误判风险的条目及人工核查建议 |
-| 实体覆盖分析 | 专有名词实体在各表述中的覆盖情况 |
+报告按"重要优先"排列，方便审阅时从最需要人工处理的条目开始：
+
+| 章节 | 内容 | 格式 |
+|------|------|------|
+| 概览 | 各状态数量汇总 | 一行统计 |
+| ✗ 未找到 | 需人工逐条核查的条目 | 紧凑表格（实体 + 数字辅助搜索） |
+| ⚠ 反向验证重点关注 | △/⚠ 条目，含完整原文片段和警告 | 每条独立展开 |
+| ✓ 已确认 | 已核实条目 | `<details>` 折叠 |
 
 ### 反向验证：自动匹配的常见误判
-
-自动关键词匹配可能在以下场景产生误判，第三轮反向验证专门排查：
 
 | 最危险信号 | 说明 |
 |-----------|------|
@@ -102,10 +110,15 @@ doc-fact-check/
 ├── README.md                     # 本文件
 ├── .gitignore
 ├── scripts/
-│   ├── doc_fact_check.py         # 核对脚本（v3.3 通用类别词 + 降噪增强版）
-│   ├── entity_config.yaml        # 通用类别词配置（跨领域，可扩展 education/medical/finance）
+│   ├── doc_fact_check.py         # 核对主脚本（v3.3）
+│   ├── adjudicate.py             # LLM 判定层（--llm-judge 调用）
+│   ├── retrieval.py              # 向量检索模块（Stage 2A）
+│   ├── factcheck_llm.py          # LLM 工具函数
+│   ├── entity_config.yaml        # 通用类别词配置（跨领域，可扩展）
 │   └── add_category_words.py     # 类别词批量增补辅助脚本
-└── txt_output/                   # 中间输出（自动生成，可选纳入 .gitignore）
+├── tests/                        # TDD 测试套件（210 tests）
+├── eval/                         # 标注评测集（factcheck-recall.jsonl）
+└── txt_output/                   # 中间输出（自动生成）
 ```
 
 ---
@@ -114,60 +127,38 @@ doc-fact-check/
 
 A document fact-checking tool that verifies each qualitative and quantitative statement
 in a target document against reference documents through a **three-round review process**
-(automated search → manual re-check → reverse validation), producing a color-coded Excel checklist.
+(automated search → manual re-check → reverse validation), producing a Markdown checklist.
 
 ### Features
 
 - 🏷️ **Compound statement decomposition**: Automatically splits "A入选X，B获批Y" into independent sub-claims for separate verification
-- 🏷️ **Generic category-word entity extraction (v3.2)**: Cross-domain category words (task/pilot/center/system/plan…) identify named entities, configured via `scripts/entity_config.yaml`, no longer relying on domain-specific suffixes
+- 🏷️ **Generic category-word entity extraction (v3.2)**: Cross-domain category words (task/pilot/center/system/plan…) identify named entities, configured via `scripts/entity_config.yaml`
 - 🏷️ **Entity-context co-occurrence check**: Verifies that named entities appear in the same context as matched keywords, preventing misattribution
-- 🏷️ **False-✓ downgrade (v3.3)**: A "✓" backed only by short/high-frequency generic keywords with no number/entity corroboration is auto-downgraded to "△ Needs Review", preventing silent false positives
-- 🔍 Full-text searches each statement's source across reference documents with reverse validation warnings
-- 🏷️ Status markers: Confirmed / Needs Review / Partial Match / Data Mismatch / Not Found
-- 📊 Color-coded Excel checklist with 5 worksheets (including entity coverage analysis)
-- 🔄 `--regenerate` mode for re-generating Excel from manually corrected JSON
-- 📋 Auto-generated reverse-validation report highlighting potential false positives
-- 📄 Auto fallback for `.doc` files (textutil on macOS)
-
-### Three-Round Review
-
-```
-Round 1: Auto keyword matching + sub-claim decomposition + entity coverage + entity-context co-occurrence
-   │  (auto-decomposition, entity extraction, co-occurrence validation)
-   ▼
-Round 2: Manual review of "Not Found" items ──→ Recover missed matches
-   │
-   ▼
-Round 3: Reverse validation of "Confirmed" items ──→ Catch false positives
-   │
-   ▼
-Final results
-```
+- 🏷️ **False-✓ downgrade (v3.3)**: A "✓" backed only by short/high-frequency generic keywords is auto-downgraded to "△ Needs Review"
+- 🔍 Full-text search with reverse validation warnings
+- 📄 Markdown report output (priority order: ✗ → ⚠△ → ✓ collapsed); `--excel` adds Excel
+- 🔄 `--regenerate` mode: re-generate report from manually corrected JSON
+- 📄 Supports `.txt` reference files directly; `.doc` auto-converted via textutil on macOS
 
 ### Dependencies
 
 ```bash
-brew install pandoc          # macOS
-pip install openpyxl
-pip install pyyaml           # 可选：加载 entity_config.yaml 类别词（缺失时回退内置默认）
+brew install pandoc          # macOS (for .docx/.doc reference files)
+pip install pyyaml           # optional: extended category-word config
+pip install openpyxl         # optional: only needed with --excel
 ```
 
 ### Usage
 
-#### From Qoder / Pi CLI
-
-Describe your fact-checking needs in a session — the skill triggers automatically:
-
-> Help me verify whether all statements in this document can be traced back to the reference materials.
-
-#### Command Line
-
 ```bash
-# Round 1: Automated check
-python3 scripts/doc_fact_check.py "target.docx" "reference_docs/" "checklist.xlsx"
+# Round 1: automated check → generates {doc}_核对清单.md
+python3 scripts/doc_fact_check.py "target.docx" "reference_docs/"
 
-# Re-generate Excel after manual review
-python3 scripts/doc_fact_check.py --regenerate txt_output/checklist_result.json "checklist.xlsx"
+# Re-generate report after manual JSON edits
+python3 scripts/doc_fact_check.py --regenerate txt_output/checklist_result.json
+
+# Also generate Excel
+python3 scripts/doc_fact_check.py "target.docx" "reference_docs/" --excel
 ```
 
 ### Status Markers
@@ -175,36 +166,10 @@ python3 scripts/doc_fact_check.py --regenerate txt_output/checklist_result.json 
 | Marker | Meaning |
 |--------|---------|
 | ✓ Confirmed | Exact or highly consistent match found in reference documents |
-| △ Needs Review | Matched only by short/high-frequency generic keywords without strong corroboration; auto-downgraded from "✓" (v3.3) |
-| △ Partial Match | Some content sourced but the statement is incomplete |
+| △ Needs Review | Matched only by short/high-frequency generic keywords; auto-downgraded (v3.3) |
+| △ Partial Match | Some content sourced but statement is incomplete |
 | △ Data Mismatch | Data or wording differs from reference documents |
 | ✗ Not Found | Statement not found in any reference document |
-
-### Common False Positives in Automated Matching
-
-| Highest Risk Signals | Description |
-|---------------------|-------------|
-| Zero hits for numbers but "Confirmed" | Keyword matched text, not numbers |
-| Overly generic keywords | Words like "platform", "construction" — must check context |
-| Statement contains 2+ numbers | Each number must be independently verified |
-| Growth rates / percentage changes | Base number match ≠ growth rate match |
-| Named entities / project names | Compare character-by-character with reference documents |
-| Statement with multiple entities | May have partial match only — verify each separately |
-| Entity-context mismatch | Entity exists in reference but never near matched keyword → misattribution |
-
-### Directory Structure
-
-```
-doc-fact-check/
-├── SKILL.md                      # Skill definition file
-├── README.md                     # This file
-├── .gitignore
-├── scripts/
-│   ├── doc_fact_check.py         # Fact-checking script (v3.3, generic category-word + noise-reduction enhanced)
-│   ├── entity_config.yaml        # Cross-domain category-word config (extensible: education/medical/finance)
-│   └── add_category_words.py     # Helper to batch-add category words
-└── txt_output/                   # Intermediate output (auto-generated, optionally in .gitignore)
-```
 
 ## License
 

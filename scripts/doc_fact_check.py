@@ -1315,21 +1315,35 @@ def cmd_full_check():
 
 
 def cmd_regenerate():
-    """从已有的 JSON 重新生成 Excel"""
+    """从已有的 JSON 重新生成 Markdown 报告（可选附加 Excel）"""
     if len(sys.argv) < 3:
-        print("用法: python3 doc_fact_check.py --regenerate <checklist_result.json> [输出Excel路径]")
+        print("用法: python3 doc_fact_check.py --regenerate <checklist_result.json> [输出报告.md] [--excel]")
         sys.exit(1)
 
-    json_path  = sys.argv[2]
-    output_xlsx = sys.argv[3] if len(sys.argv) > 3 else "核对清单.xlsx"
+    flags      = [a for a in sys.argv[1:] if a.startswith("--")]
+    want_excel = "--excel" in flags
+    pos_args   = [a for a in sys.argv[2:] if not a.startswith("--")]
+
+    json_path = pos_args[0]
+    output_md = pos_args[1] if len(pos_args) > 1 else ""
 
     with open(json_path, 'r', encoding='utf-8') as f:
         statements = json.load(f)
     print(f"从 {json_path} 加载 {len(statements)} 条表述")
 
-    if not output_xlsx.startswith("/"):
-        output_xlsx = os.path.join(os.path.dirname(os.path.abspath(json_path)) or ".", output_xlsx)
-    generate_excel(statements, output_xlsx)
+    base_dir = os.path.dirname(os.path.abspath(json_path))
+    doc_name = os.path.splitext(os.path.basename(json_path))[0].replace("checklist_result", "核对清单")
+    if not output_md:
+        output_md = os.path.join(base_dir, f"{doc_name}.md")
+    elif not os.path.isabs(output_md):
+        output_md = os.path.join(base_dir, output_md)
+
+    generate_markdown(statements, output_md, doc_name=doc_name)
+
+    if want_excel:
+        output_xlsx = os.path.splitext(output_md)[0] + ".xlsx"
+        generate_excel(statements, output_xlsx)
+
     print_summary(statements, stage="人工复查后重生成")
 
 

@@ -4,7 +4,7 @@ description: >
   文档表述准确性核对（v3.3）。将目标文档中的每条定性与定量表述与参考文档逐一比对，
   自动分解复合表述为独立子命题、基于可配置的跨领域通用类别词提取专有实体并逐项验证，
   通过自动初查→人工复检→反向验证三轮闭环，标记确认/需核实/不一致/未找到等状态，
-  生成带颜色标注的Excel核对清单（含实体覆盖分析工作表）。
+  生成 Markdown 核对报告（重要优先：✗→⚠△→✓折叠），可选附加 --excel。
   Use when the user needs to verify a summary/promotional document against
   reference documents, fact-check statements, or generate a compliance checklist.
 ---
@@ -24,10 +24,11 @@ description: >
   改配置即生效无需改代码；`scripts/add_category_words.py` 可辅助批量增词
 - **实体覆盖检查**：提取句内专有名词（引号/书名号内文本 + 类别词实体），检查参考文档中是否出现同名实体
 - **实体-语境共现验证（v3.1）**：即使实体覆盖率100%，也检查实体是否与匹配关键词
-  在同一语境（300字窗口）中出现；实体在参考文档中存在但不在关键词附近 → 张冠李戴警告
+  在同一语境（300字窗口）中出现；实体在参考文档中存在但不在关键词附近 → 张冠李戴警告；
+  「政策依据：」多文件并列引用格式跳过共现检查（跨文件引用是合法格式）
 - **子命题独立评分**：任一**有锚点**（含数字/引号专名/成就动词）的子命题无出处则整体降级；
   无锚点的论述性子命题跳过独立检索，不产生"无独立出处"假警告（v3.3）
-- **.doc 文件自动回退**：macOS 上用 textutil 自动转换
+- **.txt 参考文件直接读入**：无需 pandoc；`.doc` 文件 macOS 上用 textutil 自动转换
 
 **v3.3 降噪优化（提升信噪比）：**
 - **假✓降级 →「△ 需核实」**：命中仅靠过短(≤3字)或高频通用词、且无数字命中/引号专名佐证的
@@ -60,10 +61,10 @@ description: >
 
 ## 前置条件
 
-- 已安装 pandoc（`brew install pandoc` 或 `apt install pandoc`）
-- 已安装 openpyxl：`pip install openpyxl`
-- 建议安装 PyYAML：`pip install pyyaml`（用于加载 `entity_config.yaml` 的类别词，
-  可将领域词后缀从内置默认约 50 个扩展到 89 个；未安装时自动回退到内置默认列表，功能不受影响）
+- 已安装 pandoc（`brew install pandoc`）：转换 `.docx/.doc` 参考文件时需要；`.txt` 文件无需
+- 建议安装 PyYAML：`pip install pyyaml`（用于加载 `entity_config.yaml` 的类别词；
+  未安装时自动回退内置默认列表，功能不受影响）
+- `pip install openpyxl`：仅在使用 `--excel` 附加生成 Excel 时需要
 
 ---
 
@@ -71,9 +72,9 @@ description: >
 
 ### 第一步：确认文件结构
 
-1. 确认目标文档路径（待核对的 .docx 文件）
-2. 确认参考文档目录（包含所有参考 .docx/.doc 文件，支持子目录）
-3. 确认输出 Excel 路径
+1. 确认目标文档路径（待核对的 `.docx`、`.doc` 或 `.md`/`.txt` 文件）
+2. 确认参考文档目录（包含所有参考文档，支持子目录；`.docx/.doc` 自动转换，`.txt` 直接读入）
+3. 确认输出报告路径（默认生成 `{文档名}_核对清单.md`）
 
 ---
 
@@ -82,14 +83,30 @@ description: >
 运行脚本完成批量转换和关键词全文检索：
 
 ```bash
-python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" "核对清单.xlsx"
+# 默认输出 {文档名}_核对清单.md
+python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/"
+
+# 指定输出路径
+python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" "报告.md"
+
+# 附加生成 Excel（可选）
+python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" --excel
 ```
 
 脚本输出：
 - `txt_output/` 目录下的参考文档 txt 和目标文档 txt
-- `txt_output/checklist_result.json` — 第一轮初步结果
+- `txt_output/checklist_result.json` — 第一轮初步结果（供第二/三轮修改）
 - `txt_output/checklist_reverse_check.json` — 反向验证辅助报告
-- `核对清单.xlsx` — 5个工作表（含实体覆盖分析）
+- `{文档名}_核对清单.md` — Markdown 核对报告（人工审阅用）
+
+**Markdown 报告结构（重要优先）：**
+
+| 章节 | 内容 |
+|------|------|
+| 概览 | 各状态数量一览 |
+| ✗ 未找到 | 需人工逐条核查（表格，含命中实体/数字辅助搜索） |
+| ⚠ 反向验证重点关注 | △/⚠ 条目完整展开（出处 + 原文片段 + 警告 + 建议） |
+| ✓ 已确认 | 折叠显示（`<details>`） |
 
 **⚠️ 自动匹配的局限（需要后续两轮人工复核）：**
 1. 关键词碰巧出现在无关段落（如"100万"→网络设备参数而非科研经费）
@@ -103,10 +120,10 @@ python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" "核
 
 ### 第三步：第二轮 ── 复查「✗ 未找到」项
 
-逐条人工复查被标记为"✗ 未找到"的表述。
+逐条人工复查被标记为"✗ 未找到"的表述。在报告第一节（表格）中找到这些条目：
 
-1. 读取 `txt_output/checklist_result.json` 获取全部未找到项目
-2. 在参考文档 txt 文件中用更宽泛的策略检索：
+1. 参考"命中实体"和"命中数字"列，用更宽泛的策略在参考文档 txt 中检索
+2. 策略：
    - **分段搜索**：将长句拆成 2~3 个独立关键词分别搜索
    - **核心名词搜索**：去掉修饰词，保留核心名词
    - **数字搜索**：直接搜数字部分（如"91%"、"42.87"）
@@ -177,7 +194,7 @@ python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" "核
 #### 第四步附：复查「△ 部分匹配」和「△ 数据不一致」条目
 
 **易漏点：** 第三轮六项检查只覆盖「✓ 已确认」；而 `△ 部分匹配 / △ 数据不一致`
-被丢进「待核实表述」工作表后若无专属复检，真问题（尤其张冠李戴）会淹没在脚本误报里。
+被丢进报告「⚠ 反向验证重点关注」章节后若无专属复检，真问题（尤其张冠李戴）会淹没在脚本误报里。
 脚本已为这类条目算出 `反向验证警告`（如「子命题…无独立出处」「实体覆盖率 X%…可能张冠李戴」），
 **先读每条的警告，再按下面至少三项逐条查**：
 
@@ -209,106 +226,26 @@ python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" "核
 
 ---
 
-### 第六步：重新生成 Excel
+### 第六步：重新生成报告（Markdown）
 
-人工更新 JSON 后，使用 `--regenerate` 重新生成 Excel（无需重新转换文档）：
+人工更新 JSON 后，使用 `--regenerate` 重新生成 Markdown 报告（无需重新转换文档）：
 
 ```bash
-python3 scripts/doc_fact_check.py --regenerate txt_output/checklist_result.json "核对清单.xlsx"
-```
+# 重新生成 Markdown 报告（默认）
+python3 scripts/doc_fact_check.py --regenerate txt_output/checklist_result.json
 
-如不需要自定义，也可以在第六步中直接用以下 Python 代码生成：
+# 同时附加 Excel
+python3 scripts/doc_fact_check.py --regenerate txt_output/checklist_result.json --excel
 
-```python
-import json
-from openpyxl import Workbook
-from openpyxl.styles import PatternFill
-
-with open('txt_output/checklist_result.json', 'r', encoding='utf-8') as f:
-    data = json.load(f)
-
-wb = Workbook()
-
-green  = PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid")
-yellow = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-red    = PatternFill(start_color="FF6B6B", end_color="FF6B6B", fill_type="solid")
-orange = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
-
-def fill_cell(ws, row, col, status):
-    cell = ws.cell(row=row, column=col)
-    if "✓" in status:         cell.fill = green
-    elif "数据不一致" in status: cell.fill = orange
-    elif "△" in status:       cell.fill = yellow
-    elif "未找到" in status:   cell.fill = red
-
-# Sheet 1: 全部
-ws1 = wb.active; ws1.title = "全部核对结果"
-ws1.append(["序号", "类型", "表述内容", "核对状态", "出处", "原文片段"])
-for i, item in enumerate(data, 1):
-    ws1.append([i, item["类型"], item["表述内容"], item["状态"], item["出处"], item["原文片段"]])
-    fill_cell(ws1, i+1, 4, item["状态"])
-
-# Sheet 2: 已确认
-ws2 = wb.create_sheet("已确认表述")
-ws2.append(["序号", "类型", "表述内容", "出处", "原文片段"])
-for i, item in enumerate([x for x in data if "✓" in x["状态"]], 1):
-    ws2.append([i, item["类型"], item["表述内容"], item["出处"], item["原文片段"]])
-
-# Sheet 3: 待核实
-ws3 = wb.create_sheet("待核实表述")
-ws3.append(["序号", "类型", "表述内容", "核对状态", "备注"])
-for i, item in enumerate([x for x in data if "未找到" in x["状态"] or "△" in x["状态"]], 1):
-    ws3.append([i, item["类型"], item["表述内容"], item["状态"], item["原文片段"]])
-    fill_cell(ws3, i+1, 4, item["状态"])
-
-# Sheet 4: 反向验证重点关注
-ws4 = wb.create_sheet("反向验证重点关注（第三轮）")
-ws4.append(["序号", "类型", "表述内容", "当前状态", "命中数字", "匹配关键词", "反向验证警告"])
-for i, item in enumerate([x for x in data if x.get("反向验证警告", "")], 1):
-    ws4.append([i, item["类型"], item["表述内容"], item["状态"],
-                ", ".join(item.get("命中数字", [])),
-                item.get("匹配关键词", ""),
-                item["反向验证警告"]])
-    ws4.cell(row=i+1, column=7).fill = yellow
-
-# Sheet 5: 实体覆盖分析（v3新增）
-ws5 = wb.create_sheet("实体覆盖分析")
-ws5.append(["序号", "表述内容", "提取的实体", "匹配状态", "实体覆盖情况"])
-for i, item in enumerate([x for x in data if x.get("命中实体", [])], 1):
-    ws5.append([
-        i, item["表述内容"][:80],
-        ", ".join(item.get("命中实体", [])),
-        item["状态"],
-        _build_entity_note(item.get("反向验证警告", ""))
-    ])
-    cell = ws5.cell(row=i+1, column=4)
-    if "✓" in item["状态"]:         cell.fill = green
-    elif "数据不一致" in item["状态"]: cell.fill = orange
-    elif "△" in item["状态"]:       cell.fill = yellow
-    elif "未找到" in item["状态"]:   cell.fill = red
-
-def _build_entity_note(warnings):
-    if not warnings: return "✓ 全部覆盖"
-    if "实体覆盖率" in warnings:
-        import re
-        m = re.search(r'实体覆盖率(\d+)%', warnings)
-        pct = f" ({m.group(1)}%)" if m else ""
-        return f"⚠ 实体覆盖不足{pct}，需人工核对"
-    return "—"
-
-ws1.column_dimensions['C'].width = 55
-ws1.column_dimensions['D'].width = 18
-ws1.column_dimensions['E'].width = 40
-ws1.column_dimensions['F'].width = 90
-
-wb.save("核对清单.xlsx")
+# 指定输出路径
+python3 scripts/doc_fact_check.py --regenerate txt_output/checklist_result.json "最终报告.md"
 ```
 
 ---
 
 ### 第七步：最终汇总
 
-输出统计报告：
+`print_summary` 在终端输出统计摘要；Markdown 报告概览章节同步显示各状态数量：
 
 ```
 最终核对结果汇总：
@@ -320,14 +257,7 @@ wb.save("核对清单.xlsx")
 ────────────────────
 合计：          XX 项
 
-=== 数据不一致重点条目（需优先处理）===
-1. [名称/数字]  目标文档"XXX" vs 参考文档"YYY"
-   差异说明：...
-...
-
-=== 未找到项目清单（需向相关部门核实出处）===
-1. ...
-2. ...
+请在 Markdown 报告「反向验证重点关注」章节逐条处理警告条目。
 ```
 
 ---
