@@ -202,14 +202,14 @@ def _append_note(item: dict, note: str) -> None:
 # ── 批量判定 ──────────────────────────────────────────────────
 
 _BATCH_SYS_PROMPT = """\
-你是公文事实核查的"批量判定助手"。给你若干条编号声明，每条附参考证据片段，
-逐条判断参考证据是否支持该声明（只凭给定证据，不依赖常识）。
+你是公文事实核查的"批量判定助手"。给你若干条编号声明，每条附参考证据片段（可能为空），
+逐条完成两项任务：①判定证据支持度；②判断声明是否属于"可核实型"。
 
-【判定规则】
+【判定规则（verdict）】
 - confirmed：证据明确支持全部要素（主体/数字/专名/口径），给出引用原文
 - needs_review：部分支持/名称近似/数字或口径有出入/多源说法不一
 - inconsistent：同主体同口径下证据与声明直接冲突，给出冲突原文
-- not_found：给定证据中无任何支持（≠ 声明为假）
+- not_found：给定证据中无任何支持（≠ 声明为假）；证据为空时也选此项
 
 【关键注意】
 1. 专项全名匹配：声明涉及某一具名专项时，证据须包含完全同名的专项（主题修饰词 +
@@ -222,9 +222,18 @@ _BATCH_SYS_PROMPT = """\
    而非仅与声明话题相关。无明确表述时选 not_found，不得推断。
 5. 不得用常识判断；给定证据无任何支持时选 not_found。
 
+【可核实性判断（verifiable）】
+判断声明是否包含可供文件核查的具体事实主张：
+- yes：声明含有具体数字、具名奖项/认证/专项、排名、具体数量或特定事件，
+       原则上可通过查阅官方文件、数据库或权威资料加以核实。
+- no ：声明为修辞表达、过渡语、段落标题、通用原则、观点/信念或领导人语录，
+       本身不含独立的可查证事实。
+
 【输出格式】严格 JSON 对象，不加代码块：
 {"results": [
-  {"index": 1, "verdict": "confirmed|needs_review|inconsistent|not_found",
+  {"index": 1,
+   "verdict": "confirmed|needs_review|inconsistent|not_found",
+   "verifiable": "yes|no",
    "citation": "最关键证据原文≤80字，confirmed/inconsistent必填其余可空",
    "reasoning": "判定理由≤40字"}
 ]}
@@ -341,13 +350,11 @@ def adjudicate_batch(items: list, batch_size: int = 6, verbose: bool = True) -> 
         status      = item.get("状态", "")
         has_warning = bool(item.get("反向验证警告", ""))
         evidence    = _select_evidence(item)
-        if not evidence:
-            continue
-        if "✗" in status:                        # ✗ 未找到 + 有候选证据
+        if "✗" in status:                        # ✗ 未找到：有无证据均入队（无证据时只做可核实性分类）
             queue.append((item, evidence))
-        elif "需核实" in status:                  # △ 需核实（弱匹配，LLM 深判）
+        elif "需核实" in status and evidence:     # △ 需核实（弱匹配，LLM 深判）
             queue.append((item, evidence))
-        elif has_warning and "✓" in status:       # ✓ 已确认 + 反向验证警告（潜在假✓）
+        elif has_warning and "✓" in status and evidence:  # ✓ 已确认 + 反向验证警告（潜在假✓）
             queue.append((item, evidence))
         # △ 部分匹配 / △ 数据不一致：规则层已正确分类，不交 LLM 改写
 
@@ -381,7 +388,7 @@ def adjudicate_batch(items: list, batch_size: int = 6, verbose: bool = True) -> 
             if isinstance(idx, int) and 1 <= idx <= len(batch):
                 result_map[idx] = r
 
-        for i, (item, _) in enumerate(batch, 1):
+        for i, (item, evidence) in enumerate(batch, 1):
             r = result_map.get(i)
             if r is None:
                 _append_note(item, "LLM 批判定未返回此条结果，维持规则结果")
@@ -390,7 +397,13 @@ def adjudicate_batch(items: list, batch_size: int = 6, verbose: bool = True) -> 
             if verdict not in _STATUS_MAP:
                 _append_note(item, f"LLM 返回未知 verdict={verdict!r}，维持规则结果")
                 continue
-            item["状态"] = _STATUS_MAP[verdict]
+            # 可核实性标签（无论 verdict 结果如何都写入）
+            verifiable = r.get("verifiable", "")
+            if verifiable in ("yes", "no"):
+                item["可核实性"] = "可核实" if verifiable == "yes" else "不可核实"
+            # verdict 只在有候选证据时才覆盖状态（无证据的 ✗ 只做分类，不改状态）
+            if evidence:
+                item["状态"] = _STATUS_MAP[verdict]
             citation  = r.get("citation", "").strip()
             reasoning = r.get("reasoning", "").strip()
             if citation:

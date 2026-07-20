@@ -1068,17 +1068,27 @@ def generate_markdown(items, output_path, doc_name="", ref_count=0):
     L.append("---")
 
     # ── Section 1: ✗ 未找到 ──
+    nf_verifiable   = [x for x in not_found if x.get("可核实性") == "可核实"]
+    nf_unverifiable = [x for x in not_found if x.get("可核实性") == "不可核实"]
+    nf_unlabeled    = [x for x in not_found if "可核实性" not in x]
+    has_verifiable  = bool(nf_verifiable or nf_unverifiable)
+
     L.append("")
     L.append(f"## ✗ 未找到（{len(not_found)} 条）—— 建议人工逐条核查")
+    if has_verifiable:
+        L.append(f"> 可核实（建议提交 AI Agent）：**{len(nf_verifiable)} 条**　　"
+                 f"不可核实（修辞/标题/原则）：{len(nf_unverifiable)} 条")
     if not_found:
         L.append("")
-        L.append("| # | 表述内容 | 命中实体 | 命中数字 |")
-        L.append("|---|---------|---------|--------|")
+        L.append("| # | 可核实性 | 表述内容 | 命中实体 | 命中数字 |")
+        L.append("|---|---------|---------|---------|--------|")
         for i, item in enumerate(not_found, 1):
             text     = item["表述内容"][:80].replace("|", "｜")
             entities = "、".join(item.get("命中实体", [])) or "—"
             numbers  = "、".join(item.get("命中数字", [])) or "—"
-            L.append(f"| {i} | {text} | {entities} | {numbers} |")
+            vmark    = {"可核实": "🔍 可核实", "不可核实": "— 不可核实"}.get(
+                           item.get("可核实性", ""), "")
+            L.append(f"| {i} | {vmark} | {text} | {entities} | {numbers} |")
     else:
         L.append("\n（无）")
 
