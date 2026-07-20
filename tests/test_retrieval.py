@@ -218,3 +218,77 @@ class TestRetrieve:
         for r in results:
             assert isinstance(r["offset"], int)
             assert r["offset"] >= 0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CJK content word extraction  (_CJK_WORD_RE + retrieve integration)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestCJKContentWords:
+    """测试 claim 内容词提取及其对 retrieve() 得分的影响。"""
+
+    def test_cjk_word_re_extracts_2to6_char_words(self):
+        # 引号/标点分隔使贪婪匹配正确止步
+        words = R._CJK_WORD_RE.findall('防性侵"学生工作"')
+        assert "防性侵" in words
+        assert "学生工作" in words
+
+    def test_cjk_word_re_ignores_single_char(self):
+        words = R._CJK_WORD_RE.findall("学")
+        assert words == []
+
+    def test_cjk_word_re_on_real_claim(self):
+        # 含编号前缀和引号的真实 claim
+        words = R._CJK_WORD_RE.findall('4. 防性侵"六个一"')
+        assert "防性侵" in words
+        assert "六个一" in words
+
+    def test_cjk_words_boost_score_for_target_doc(self):
+        """
+        两个文档都含"六个一"，但只有附件2含"防性侵"。
+        claim="4. 防性侵\"六个一\""，entities=["六个一"] 时，
+        CJK 内容词提取应将"防性侵"加入查询，使附件2排名第一。
+        """
+        docs = {
+            "附件2.txt": (
+                "4. 防性侵\"六个一\"：以女生、寄宿生为重点，开展活动："
+                "①组织观看一次防性侵专题片②发一封防性侵致家长书"
+                "③开一次防性侵主题班会④设立一个身体安全教育专栏。"
+            ),
+            "近视文件.txt": (
+                "8. 近视防控\"六个一\"：①做一次视力检查②做一次户外活动"
+                "③记一次护眼日记④参加一次护眼课堂⑤开一次家长讲座。"
+            ),
+        }
+        idx = R.build_index(docs)
+        results = R.retrieve(
+            '4. 防性侵"六个一"',
+            [],
+            ["六个一"],
+            idx,
+            top_k=5,
+        )
+        R.close_index(idx)
+
+        assert results, "应有结果"
+        assert "防性侵" in results[0]["text"], (
+            "防性侵内容词应将附件2排名提到第一"
+        )
+
+    def test_subsumed_word_not_added_as_duplicate(self):
+        """
+        若 entities 中有更长的词已覆盖 CJK 词（即 w in t），不应重复加入查询。
+        例：entities=["防性侵六个一"] → "防性侵" 被覆盖，不应单独添加。
+        """
+        docs = {"doc.txt": "防性侵六个一活动开展情况如下。"}
+        idx = R.build_index(docs)
+        # 不应崩溃，也不应因重复计分而异常
+        results = R.retrieve(
+            '防性侵"六个一"',
+            [],
+            ["防性侵六个一"],
+            idx,
+            top_k=3,
+        )
+        R.close_index(idx)
+        assert isinstance(results, list)

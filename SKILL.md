@@ -91,6 +91,9 @@ python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" "报
 
 # 附加生成 Excel（可选）
 python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" --excel
+
+# 启用 LLM 判定层（推荐：对△/✗条目做二次深度判定，需配置 OPENAI_API_KEY 或 DEEPSEEK_API_KEY）
+python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" --llm-judge
 ```
 
 脚本输出：
@@ -98,6 +101,25 @@ python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" --ex
 - `txt_output/checklist_result.json` — 第一轮初步结果（供第二/三轮修改）
 - `txt_output/checklist_reverse_check.json` — 反向验证辅助报告
 - `{文档名}_核对清单.md` — Markdown 核对报告（人工审阅用）
+
+#### Step 2A：检索层（自动，内置）
+
+脚本内置 **trigram FTS5 全文检索**（`scripts/retrieval.py`），无需额外配置：
+
+- **分块**：参考文档按 ~600 字分块（相邻块重叠 150 字），确保不同条目落入独立块
+- **RRF 融合评分**：主查询词（2×权重）+ 精确实体/数字（1×权重）+ claim CJK内容词
+- **CJK 内容词补充**：自动从 claim 提取 2-6 字 CJK 词（如"防性侵"），补充 entity 未覆盖的区分性词汇，解决同名项目混淆问题（如"防性侵六个一"vs"近视防控六个一"）
+- **精确词惩罚**：不含任何精确词（实体/数字）的候选块得分×0.4
+
+#### Step 3.8：LLM 判定层（`--llm-judge`，可选）
+
+启用后，脚本对全部 △/✗ 条目调用 LLM 做批量深度判定：
+
+- 每批 6 条，返回 `confirmed / needs_review / inconsistent / not_found` 四态
+- `confirmed` 升为 ✓；`inconsistent` 留 △；`not_found` 留 ✗
+- 判定理由写入 `判定理由` 字段；needs_review/inconsistent 额外追加到 `反向验证警告`
+- 默认模型：`deepseek-chat`（可通过 `LLM_MODEL` 环境变量覆盖）
+- 环境变量：`DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY`
 
 **Markdown 报告结构（重要优先）：**
 
