@@ -189,8 +189,9 @@ def compute_recall(annotations: list[dict], results: list[dict]) -> dict:
     for ann in annotations:
         claim = ann["声明文本"]
         expected_status = normalize_status(ann["期望状态"])
-        expected_source = ann.get("期望出处", {}).get("sourcePath", "")
-        expected_fragment = ann.get("期望出处", {}).get("片段", "")
+        expected_出处 = ann.get("期望出处") or {}
+        expected_source = expected_出处.get("sourcePath", "")
+        expected_fragment = expected_出处.get("片段", "")
         miss_type = ann.get("漏检类型", "未知")
 
         matched_result = match_claim_to_results(claim, results)
@@ -354,6 +355,11 @@ def main():
         action="store_true",
         help="强制重新运行管线（即使 checklist_result.json 已存在）"
     )
+    parser.add_argument(
+        "--corpus",
+        default=None,
+        help="只评测指定测试集（按 JSONL 中 '测试集' 字段过滤，如 '督导局应知应会'）"
+    )
 
     args = parser.parse_args()
 
@@ -366,7 +372,12 @@ def main():
         print("  请确保标注集文件存在且格式正确:", jsonl_path)
         sys.exit(0)
 
-    print(f"加载标注集: {len(annotations)} 条  ({jsonl_path})")
+    if args.corpus:
+        before = len(annotations)
+        annotations = [a for a in annotations if a.get("测试集") == args.corpus]
+        print(f"加载标注集: {before} 条 → 过滤后 {len(annotations)} 条 (corpus={args.corpus})  ({jsonl_path})")
+    else:
+        print(f"加载标注集: {len(annotations)} 条  ({jsonl_path})")
 
     # Determine pipeline results source
     elapsed = 0.0
