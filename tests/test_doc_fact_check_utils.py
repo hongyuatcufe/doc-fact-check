@@ -288,6 +288,81 @@ class TestCheckIntraDocumentConsistency:
 # extract_keywords
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────────────────────
+# extract_statements
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestExtractStatements:
+    def _write(self, tmp_path, text):
+        p = tmp_path / "doc.txt"
+        p.write_text(text, encoding="utf-8")
+        return str(p)
+
+    def test_returns_list(self, tmp_path):
+        p = self._write(tmp_path, "学校获批国家级科研项目356项，成效显著。")
+        result = D.extract_statements(p)
+        assert isinstance(result, list)
+
+    def test_extracts_quantitative_statement(self, tmp_path):
+        p = self._write(tmp_path, "学校获批国家级科研项目356项，成效显著。")
+        result = D.extract_statements(p)
+        assert len(result) >= 1
+        types = [s["类型"] for s in result]
+        assert "定量" in types
+
+    def test_extracts_qualitative_statement(self, tmp_path):
+        p = self._write(tmp_path, "学校坚持立德树人，持续推进教育改革工作，取得积极成效。")
+        result = D.extract_statements(p)
+        assert any(s["类型"] == "定性" for s in result)
+
+    def test_splits_on_newline(self, tmp_path):
+        text = "学校获批国家级科研项目356项，成效显著。\n引进高层次人才128名，持续推进人才战略。"
+        p = self._write(tmp_path, text)
+        result = D.extract_statements(p)
+        assert len(result) >= 2
+
+    def test_deduplicates_identical_statements(self, tmp_path):
+        line = "学校获批国家级科研项目356项，成效显著。"
+        p = self._write(tmp_path, line + "\n" + line)
+        result = D.extract_statements(p)
+        texts = [s["表述内容"] for s in result]
+        assert len(texts) == len(set(texts))
+
+    def test_required_keys_present(self, tmp_path):
+        p = self._write(tmp_path, "学校获批国家级科研项目356项，成效显著。")
+        for s in D.extract_statements(p):
+            for key in ["类型", "表述内容", "状态", "出处", "命中数字", "命中实体", "子命题"]:
+                assert key in s, f"缺少字段: {key}"
+
+    def test_short_parts_filtered(self, tmp_path):
+        p = self._write(tmp_path, "太短。\n学校获批国家级科研项目356项，成效显著。")
+        result = D.extract_statements(p)
+        texts = [s["表述内容"] for s in result]
+        assert not any(len(t) < 10 for t in texts)
+
+    def test_numeric_only_parts_filtered(self, tmp_path):
+        # 纯数字/序号行不应提取为表述
+        p = self._write(tmp_path, "1234567890\n学校获批国家级科研项目356项，成效显著。")
+        result = D.extract_statements(p)
+        assert not any(s["表述内容"].strip().isdigit() for s in result)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _get_category_patterns — flat list config branch
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestGetCategoryPatternsFlatList:
+    def test_flat_list_config_adds_words(self, tmp_path):
+        import yaml as _yaml
+        # section_content 是 list（不是 dict）的 YAML 结构
+        cfg = tmp_path / "entity_config.yaml"
+        cfg.write_text("custom_words:\n  - 创新中心\n  - 攻关团队\n", encoding="utf-8")
+        patterns = D._get_category_patterns(config_path=str(cfg))
+        text = "学校新建创新中心两个，成效显著。"
+        matched = any(p.findall(text) for p in patterns)
+        assert matched, "flat list config 中的类别词「创新中心」应被模式命中"
+
+
 class TestExtractKeywords:
     def test_returns_list(self):
         assert isinstance(D.extract_keywords("学校获批国家级科研项目356项"), list)

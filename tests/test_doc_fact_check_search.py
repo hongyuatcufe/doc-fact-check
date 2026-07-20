@@ -311,10 +311,32 @@ class TestSearchInReferenceExtraPaths:
         )
         assert "✗" in it["状态"] or "未找到" in it["状态"]
 
+    def test_growth_rate_not_in_growth_ctx_warns(self):
+        """
+        声明含增长关键词+百分比，参考文档中百分比不在增长语境 → 增长率警告
+        """
+        ref_text = "增长率达到历史新高，超过预期。" + "X" * 100 + "学校评分为98%，继续保持稳定。"
+        it = _item(query="增长率达到98%", numbers=["98%"])
+        D.search_in_reference([it], [_ref("ref.txt", ref_text)])
+        assert "✓" in it["状态"], f"应匹配成功，实际: {it['状态']}"
+        assert "增长率" in it.get("反向验证警告", ""), \
+            f"百分比不在增长语境应有警告，实际: {it.get('反向验证警告','')}"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# get_context_snippet — additional edge cases
-# ──────────────────────────────────────────────────────────────────────────────
+    def test_generic_high_freq_keyword_downgrades_to_core_review(self):
+        """
+        关键词出现 >20 次且仅见于少数文档（非领域核心词），无数字/引号强证据
+        → 自动降级为 △ 需核实，并附高频通用警告
+        """
+        generic_kw_phrase = "持续推进各项工作成效显著"
+        ref_a = (generic_kw_phrase + "。\n") * 25  # 出现 25 次
+        ref_b = "学校积极推动教学改革，努力提升教育质量，持续进步。"  # 不含该短语
+        it = _item(query=generic_kw_phrase, numbers=[], entities=[])
+        D.search_in_reference([it], [_ref("a.txt", ref_a), _ref("b.txt", ref_b)])
+        assert "需核实" in it["状态"] or "数据不一致" in it["状态"], \
+            f"高频通用关键词应降级，实际: {it['状态']}"
+        assert "通用" in it.get("反向验证警告", "") or "过于通用" in it.get("反向验证警告", ""), \
+            f"应有通用关键词警告，实际警告: {it.get('反向验证警告','')[:200]}"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 「政策依据：」行 — 跳过实体-语境共现检查，保留文件名存在性检查
