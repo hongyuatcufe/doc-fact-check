@@ -381,3 +381,110 @@ class TestExtractKeywords:
     def test_action_phrase_included(self):
         kws = D.extract_keywords("牵头成立新型研究院")
         assert any("研究院" in k or "成立" in k for k in kws)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# generate_markdown
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _sample_items():
+    return [
+        {
+            "类型": "定量", "表述内容": "学校获批国家级科研项目356项，成效显著。",
+            "状态": "✓ 已确认", "出处": "科研报告",
+            "原文片段": "科研报告: ...356项...", "匹配关键词": "356项",
+            "命中数字": ["356项"], "命中实体": ["科研项目"], "子命题": [],
+            "反向验证警告": "",
+        },
+        {
+            "类型": "定量", "表述内容": "整体升学率从50%升至67%，大幅提升。",
+            "状态": "△ 数据不一致", "出处": "招生数据",
+            "原文片段": "招生数据: ...从47%升至65%...", "匹配关键词": "升学率",
+            "命中数字": ["50%", "67%"], "命中实体": [], "子命题": [],
+            "反向验证警告": "⚠ 数字不匹配：50%/67%与参考文档不符",
+        },
+        {
+            "类型": "定性", "表述内容": "承担数智化转型相关专项试点任务。",
+            "状态": "✗ 未找到", "出处": "—",
+            "原文片段": "所有参照文档均未出现此表述/数据", "匹配关键词": "",
+            "命中数字": [], "命中实体": ["试点任务"], "子命题": [],
+            "反向验证警告": "",
+        },
+    ]
+
+
+class TestGenerateMarkdown:
+    def _gen(self, tmp_path, items=None, doc_name="测试文档", ref_count=5):
+        p = tmp_path / "report.md"
+        D.generate_markdown(_sample_items() if items is None else items, str(p),
+                             doc_name=doc_name, ref_count=ref_count)
+        return p.read_text(encoding="utf-8")
+
+    def test_creates_file(self, tmp_path):
+        p = tmp_path / "report.md"
+        D.generate_markdown(_sample_items(), str(p))
+        assert p.exists()
+
+    def test_title_contains_doc_name(self, tmp_path):
+        md = self._gen(tmp_path, doc_name="讲话稿2026")
+        assert "讲话稿2026" in md
+
+    def test_overview_section_present(self, tmp_path):
+        md = self._gen(tmp_path)
+        assert "## 概览" in md
+
+    def test_overview_counts_correct(self, tmp_path):
+        md = self._gen(tmp_path)
+        assert "✓ 已确认：1" in md
+        assert "✗ 未找到：1" in md
+
+    def test_not_found_section_present(self, tmp_path):
+        md = self._gen(tmp_path)
+        assert "## ✗ 未找到" in md
+
+    def test_not_found_item_in_table(self, tmp_path):
+        md = self._gen(tmp_path)
+        assert "承担数智化转型相关专项试点任务" in md
+
+    def test_flagged_section_present(self, tmp_path):
+        md = self._gen(tmp_path)
+        assert "## ⚠ 反向验证重点关注" in md
+
+    def test_flagged_item_shows_warning(self, tmp_path):
+        md = self._gen(tmp_path)
+        assert "数字不匹配" in md
+
+    def test_flagged_item_shows_snippet(self, tmp_path):
+        md = self._gen(tmp_path)
+        assert "47%升至65%" in md
+
+    def test_confirmed_section_present(self, tmp_path):
+        md = self._gen(tmp_path)
+        assert "## ✓ 已确认" in md
+
+    def test_confirmed_in_details_block(self, tmp_path):
+        md = self._gen(tmp_path)
+        assert "<details>" in md
+        assert "356项" in md
+
+    def test_ref_count_in_header(self, tmp_path):
+        md = self._gen(tmp_path, ref_count=24)
+        assert "24 份" in md
+
+    def test_pipe_in_statement_escaped(self, tmp_path):
+        items = [dict(_sample_items()[2], **{"表述内容": "A｜B分隔的表述内容示例。"})]
+        md = self._gen(tmp_path, items=items)
+        # Should not break table (no unescaped | in cell)
+        assert "A｜B" in md  # 全角符号，不破坏 Markdown 表格
+
+    def test_empty_items_produces_valid_md(self, tmp_path):
+        md = self._gen(tmp_path, items=[])
+        assert "## 概览" in md
+        assert "✓ 已确认：0" in md
+
+    def test_long_snippet_truncated(self, tmp_path):
+        long_item = dict(_sample_items()[1])
+        long_item["原文片段"] = "X" * 200
+        md = self._gen(tmp_path, items=[long_item])
+        # snippet should be cut at ~120 chars
+        assert "X" * 200 not in md

@@ -1035,6 +1035,113 @@ def _build_entity_coverage_note(warnings):
     return "见反向验证警告"
 
 
+def generate_markdown(items, output_path, doc_name="", ref_count=0):
+    """生成 Markdown 核对报告（重要优先：✗ → ⚠△ → ✓）"""
+    import datetime
+
+    total   = len(items)
+    nf_n    = sum(1 for x in items if "✗" in x.get("状态", ""))
+    warn_n  = sum(1 for x in items if x.get("反向验证警告", ""))
+    delta_n = sum(1 for x in items if "△" in x.get("状态", ""))
+    conf_n  = sum(1 for x in items if "✓" in x.get("状态", ""))
+
+    not_found = [x for x in items if "✗" in x.get("状态", "")]
+    flagged   = [x for x in items if x.get("反向验证警告", "") or "△" in x.get("状态", "")]
+    confirmed = [x for x in items if "✓" in x.get("状态", "")]
+
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    title = doc_name or os.path.splitext(os.path.basename(output_path))[0]
+
+    L = []
+    L.append(f"# 核对清单 — {title}")
+    L.append(f"生成时间：{today}  参考文档：{ref_count} 份  共 {total} 条")
+    L.append("")
+    L.append("## 概览")
+    L.append(
+        f"✗ 未找到：{nf_n}　　"
+        f"⚠ 反向验证重点关注：{warn_n}　　"
+        f"△ 需关注：{delta_n}　　"
+        f"✓ 已确认：{conf_n}"
+    )
+    L.append("")
+    L.append("---")
+
+    # ── Section 1: ✗ 未找到 ──
+    L.append("")
+    L.append(f"## ✗ 未找到（{len(not_found)} 条）—— 建议人工逐条核查")
+    if not_found:
+        L.append("")
+        L.append("| # | 表述内容 | 命中实体 | 命中数字 |")
+        L.append("|---|---------|---------|--------|")
+        for i, item in enumerate(not_found, 1):
+            text     = item["表述内容"][:80].replace("|", "｜")
+            entities = "、".join(item.get("命中实体", [])) or "—"
+            numbers  = "、".join(item.get("命中数字", [])) or "—"
+            L.append(f"| {i} | {text} | {entities} | {numbers} |")
+    else:
+        L.append("\n（无）")
+
+    L.append("")
+    L.append("---")
+
+    # ── Section 2: ⚠/△ 反向验证重点关注 ──
+    L.append("")
+    L.append(f"## ⚠ 反向验证重点关注（{len(flagged)} 条）")
+    if flagged:
+        for i, item in enumerate(flagged, 1):
+            status  = item.get("状态", "")
+            source  = item.get("出处", "") or "—"
+            snippet = item.get("原文片段", "") or ""
+            if len(snippet) > 120:
+                snippet = snippet[:120] + "…"
+            snippet_md = f"`{snippet.replace('`', '')}`" if snippet else "—"
+            kw      = item.get("匹配关键词", "") or "—"
+            warning = item.get("反向验证警告", "") or "—"
+            advice  = _build_advice(warning)
+            L.append("")
+            L.append(f"### {i} · {status}")
+            L.append("")
+            L.append("**表述：**  ")
+            L.append(item["表述内容"])
+            L.append("")
+            L.append("| 字段 | 内容 |")
+            L.append("|------|------|")
+            L.append(f"| 出处 | {source} |")
+            L.append(f"| 原文片段 | {snippet_md} |")
+            L.append(f"| 匹配关键词 | {kw} |")
+            L.append(f"| 警告 | {warning} |")
+            L.append(f"| 建议 | {advice} |")
+    else:
+        L.append("\n（无）")
+
+    L.append("")
+    L.append("---")
+
+    # ── Section 3: ✓ 已确认（折叠） ──
+    L.append("")
+    L.append(f"## ✓ 已确认（{len(confirmed)} 条）")
+    if confirmed:
+        L.append("")
+        L.append("<details><summary>展开查看</summary>")
+        L.append("")
+        L.append("| # | 表述内容（前 80 字） | 出处 |")
+        L.append("|---|------------------|------|")
+        for i, item in enumerate(confirmed, 1):
+            text      = item["表述内容"][:80].replace("|", "｜")
+            source    = item.get("出处", "") or "—"
+            warn_flag = " ⚠" if item.get("反向验证警告", "") else ""
+            L.append(f"| {i} | {text} | {source}{warn_flag} |")
+        L.append("")
+        L.append("</details>")
+    else:
+        L.append("\n（无）")
+
+    content = "\n".join(L) + "\n"
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    print(f"\nMarkdown 报告已保存: {output_path}")
+
+
 # ── 统计 ──────────────────────────────────────────────────
 
 def print_summary(statements, stage="第一轮自动核对"):
@@ -1054,7 +1161,7 @@ def print_summary(statements, stage="第一轮自动核对"):
     if suspicious:
         print(f"{'='*60}")
         print(f"\u26a0 反向验证警告: {suspicious} 条\u300c已确认\u300d条目存在潜在问题")
-        print(f"  请在 Excel\u300c反向验证重点关注\u300d工作表中逐条复查")
+        print(f"  请在 Markdown 报告\u300c反向验证重点关注\u300d章节逐条复查")
         print(f"{'='*60}")
 
 
@@ -1063,19 +1170,20 @@ def print_summary(statements, stage="第一轮自动核对"):
 def cmd_full_check():
     """运行完整的第一轮自动核对流程"""
     if len(sys.argv) < 3:
-        print("用法: python3 doc_fact_check.py <目标文档.docx> <参考文档目录> [输出Excel路径]")
+        print("用法: python3 doc_fact_check.py <目标文档.docx> <参考文档目录> [输出报告.md] [--excel] [--llm-judge]")
         sys.exit(1)
 
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    args  = [a for a in sys.argv[1:] if not a.startswith("--")]
     flags = [a for a in sys.argv[1:] if a.startswith("--")]
-    llm_judge = "--llm-judge" in flags
+    llm_judge  = "--llm-judge" in flags
+    want_excel = "--excel" in flags
 
-    main_docx   = args[0] if len(args) > 0 else ""
-    ref_dir     = args[1] if len(args) > 1 else ""
-    output_xlsx = args[2] if len(args) > 2 else "核对清单.xlsx"
+    main_docx  = args[0] if len(args) > 0 else ""
+    ref_dir    = args[1] if len(args) > 1 else ""
+    output_md  = args[2] if len(args) > 2 else ""   # 默认下面计算
 
     if not main_docx or not ref_dir:
-        print("用法: python3 doc_fact_check.py <目标文档.docx> <参考文档目录> [输出Excel路径] [--llm-judge]")
+        print("用法: python3 doc_fact_check.py <目标文档.docx> <参考文档目录> [输出报告.md] [--excel] [--llm-judge]")
         sys.exit(1)
 
     txt_dir = os.path.join(os.path.dirname(main_docx) or ".", "txt_output")
@@ -1188,13 +1296,20 @@ def cmd_full_check():
         json.dump(reverse_check, f, ensure_ascii=False, indent=2)
     print(f"反向验证报告已保存: {rev_path}")
 
-    # Step 5: Excel
+    # Step 5: 生成 Markdown 报告（默认）；可选 --excel
     print("\n" + "=" * 60)
-    print("Step 5: 生成Excel核对清单 (v3: 含实体覆盖分析工作表)")
+    print("Step 5: 生成核对报告")
     print("=" * 60)
-    if not output_xlsx.startswith("/"):
-        output_xlsx = os.path.join(os.path.dirname(main_docx) or ".", output_xlsx)
-    generate_excel(statements, output_xlsx)
+    doc_basename = os.path.splitext(os.path.basename(main_docx))[0]
+    if not output_md:
+        output_md = os.path.join(os.path.dirname(main_docx) or ".", f"{doc_basename}_核对清单.md")
+    elif not os.path.isabs(output_md):
+        output_md = os.path.join(os.path.dirname(main_docx) or ".", output_md)
+    generate_markdown(statements, output_md, doc_name=doc_basename, ref_count=len(ref_texts))
+
+    if want_excel:
+        output_xlsx = os.path.splitext(output_md)[0] + ".xlsx"
+        generate_excel(statements, output_xlsx)
 
     print_summary(statements)
 
