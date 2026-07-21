@@ -54,12 +54,13 @@ SYNC_FILES=(
   doc_fact_check.py
   factcheck_llm.py
   retrieval.py
+  adjudicate.py
   entity_config.yaml
   add_category_words.py
 )
 
 echo ""
-echo "── 同步文件 ──────────────────────────────────────────────"
+echo "── 同步 scripts/ ─────────────────────────────────────────"
 for target in "${TARGETS[@]}"; do
   echo "  → $target"
   for f in "${SYNC_FILES[@]}"; do
@@ -69,6 +70,23 @@ for target in "${TARGETS[@]}"; do
       continue
     fi
     cp "$src_file" "$target/$f"
+    echo "    · $f"
+  done
+done
+
+echo ""
+echo "── 同步 docs (SKILL.md / REVIEW-CHECKLIST.md) ───────────"
+DOC_FILES=(SKILL.md REVIEW-CHECKLIST.md)
+for target in "${TARGETS[@]}"; do
+  doc_dir="$(dirname "$target")"   # tools/doc-fact-check/
+  echo "  → $doc_dir"
+  for f in "${DOC_FILES[@]}"; do
+    src_file="$HERE/$f"
+    if [[ ! -f "$src_file" ]]; then
+      echo "    ⚠ 跳过（源文件不存在）：$f"
+      continue
+    fi
+    cp "$src_file" "$doc_dir/$f"
     echo "    · $f"
   done
 done
