@@ -1,10 +1,11 @@
 ---
 name: doc-fact-check
 description: >
-  文档表述准确性核对（v3.3）。将目标文档中的每条定性与定量表述与参考文档逐一比对，
+  文档表述准确性核对（v3.4）。将目标文档中的每条定性与定量表述与参考文档逐一比对，
   自动分解复合表述为独立子命题、基于可配置的跨领域通用类别词提取专有实体并逐项验证，
   通过自动初查→人工复检→反向验证三轮闭环，标记确认/需核实/不一致/未找到等状态，
   生成 Markdown 核对报告（重要优先：✗→⚠△→✓折叠），可选附加 --excel。
+  默认无 LLM，宁可多看不漏检；可选 --classify 为 ✗ 条目打路由标签供下游 agent 使用。
   Use when the user needs to verify a summary/promotional document against
   reference documents, fact-check statements, or generate a compliance checklist.
 ---
@@ -83,7 +84,7 @@ description: >
 运行脚本完成批量转换和关键词全文检索：
 
 ```bash
-# 默认输出 {文档名}_核对清单.md
+# 默认输出 {文档名}_核对清单.md（无 LLM，~4s，Recall 最高）
 python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/"
 
 # 指定输出路径
@@ -92,7 +93,12 @@ python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" "报
 # 附加生成 Excel（可选）
 python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" --excel
 
-# 启用 LLM 判定层（推荐：对△/✗条目做二次深度判定，需配置 OPENAI_API_KEY 或 DEEPSEEK_API_KEY）
+# 为 ✗ 条目打「可核实/不可核实」路由标签（agent 场景推荐，~15s，Recall 不变）
+# 让下游 agent 知道哪些 ✗ 值得进一步追查，哪些是修辞/过渡句可忽略
+python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" --classify
+
+# LLM 深度判定（仅限人工复核场景，~43s，会降低 Recall，需配置 DEEPSEEK_API_KEY）
+# 注意：测试集上 Recall 从 100% 降至 93.8%，不建议在自动化流程中使用
 python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" --llm-judge
 ```
 
@@ -111,15 +117,27 @@ python3 scripts/doc_fact_check.py "目标文档.docx" "参考文档目录/" --ll
 - **CJK 内容词补充**：自动从 claim 提取 2-6 字 CJK 词（如"防性侵"），补充 entity 未覆盖的区分性词汇，解决同名项目混淆问题（如"防性侵六个一"vs"近视防控六个一"）
 - **精确词惩罚**：不含任何精确词（实体/数字）的候选块得分×0.4
 
-#### Step 3.8：LLM 判定层（`--llm-judge`，可选）
+#### Step 3.8：LLM 通道（可选，两种模式）
 
-启用后，脚本对全部 △/✗ 条目调用 LLM 做批量深度判定：
+**模式一：`--classify`（agent 场景推荐）**
+
+对全部 ✗ 未找到条目做轻量可核实性分类，不改变任何判定结果：
+
+- 每批 20 条，仅判断「可核实 / 不可核实」，无证据输入
+- 结果写入每条 ✗ 条目的 `可核实性` 字段，Markdown 报告 ✗ 区域同步展示 🔍/— 标签
+- 耗时 ~15s（vs 默认 ~4s），Recall 不变（100%）
+- **适用场景**：输出需流转给下游 AI Agent 时，用标签过滤掉修辞/过渡句，只追查真正的事实声明
+- **不适用场景**：人工直接看报告时，跳过此步即可，肉眼可判断
+
+**模式二：`--llm-judge`（人工深度复核，谨慎使用）**
+
+对 △/✗ 条目调用 LLM 做批量深度 verdict 判定（自动包含 `--classify` 效果）：
 
 - 每批 6 条，返回 `confirmed / needs_review / inconsistent / not_found` 四态
-- `confirmed` 升为 ✓；`inconsistent` 留 △；`not_found` 留 ✗
-- 判定理由写入 `判定理由` 字段；needs_review/inconsistent 额外追加到 `反向验证警告`
-- 默认模型：`deepseek-chat`（可通过 `LLM_MODEL` 环境变量覆盖）
-- 环境变量：`DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY`
+- `confirmed` 升为 ✓；判定理由写入 `判定理由` 字段
+- 耗时 ~43s；**测试集 Recall 从 100% 降至 93.8%**（LLM 对边界案例偏保守）
+- **不建议用于自动化流程**；仅在人工已看过 `--classify` 结果、需对特定边界案例重判时使用
+- 环境变量：`DEEPSEEK_API_KEY`（默认模型 `deepseek-chat`，可通过 `FACTCHECK_LLM_MODEL` 覆盖）
 
 **Markdown 报告结构（重要优先）：**
 
