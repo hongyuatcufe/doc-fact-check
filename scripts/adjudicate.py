@@ -421,6 +421,117 @@ def adjudicate_batch(items: list, batch_size: int = 6, verbose: bool = True) -> 
         print(f"  [LLM批判定] 完成，共判定 {done} 条")
 
 
+# ── 可核实性快速分类（--classify 通道）──────────────────────────
+
+_CLASSIFY_SYS_PROMPT = """\
+判断以下每条声明是否为「可核实型」。不需要查阅证据，只根据声明文本本身判断。
+
+- yes：声明含有具体数字、具名奖项/认证/专项名称/排名/政策文号/特定事件，
+       原则上可通过查阅官方文件或权威资料加以核实
+- no ：声明为修辞表达、过渡句、段落标题、通用原则、信念陈述或领导人语录，
+       本身不含独立的可查证事实主张
+
+输出严格 JSON，不加代码块：
+{"results": [{"index": 1, "verifiable": "yes|no"}]}
+每条 index 与输入编号一一对应，不得遗漏。
+"""
+
+
+def _call_classify_batch(user_msg: str, n_items: int, timeout: int = 60) -> list | None:
+    """轻量分类批次调用：只返回 verifiable yes/no，无证据输入，token 极少。"""
+    key, base, model = _llm_config()
+    if not key:
+        return None
+    max_tokens = max(100, n_items * 30)
+    payload = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _CLASSIFY_SYS_PROMPT},
+            {"role": "user",   "content": user_msg},
+        ],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }).encode()
+    req = urllib.request.Request(
+        f"{base.rstrip('/')}/chat/completions",
+        data=payload,
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {key}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read())
+        content = body["choices"][0]["message"]["content"]
+        content = re.sub(r"^```json\s*|```\s*$", "", content.strip(), flags=re.MULTILINE)
+        data = json.loads(content)
+        results = data.get("results", [])
+        if isinstance(results, list):
+            return results
+        return None
+    except Exception:
+        return None
+
+
+def classify_verifiability(items: list, batch_size: int = 20, verbose: bool = True) -> None:
+    """
+    对 ✗ 未找到条目快速分类可核实性（不看证据，只看声明文本）。
+    比 adjudicate_batch 快约 8×：无证据输入，批大小 20，prompt 更短。
+    已有 可核实性 标签的条目（来自 --llm-judge）直接跳过。
+    """
+    key, _, model = _llm_config()
+    if not key:
+        if verbose:
+            print("  [可核实性分类] 无 API key，跳过")
+        return
+
+    targets = [item for item in items
+               if "✗" in item.get("状态", "") and "可核实性" not in item]
+
+    if not targets:
+        if verbose:
+            print("  [可核实性分类] 无待分类条目（已全部标注或无 ✗ 条目）")
+        return
+
+    total = len(targets)
+    if verbose:
+        print(f"  [可核实性分类] {total} 条 ✗ 待分类，"
+              f"批大小={batch_size}，模型={model}，"
+              f"预计 {-(-total // batch_size)} 次 API 调用")
+
+    done = 0
+    for start in range(0, total, batch_size):
+        batch = targets[start:start + batch_size]
+        parts = []
+        for seq, item in enumerate(batch, 1):
+            parts.append(f"【{seq}】{item.get('表述内容', '')}")
+        user_msg = "\n".join(parts)
+
+        results = _call_classify_batch(user_msg, len(batch))
+        if results is None:
+            done += len(batch)
+            continue
+
+        result_map = {r.get("index"): r for r in results
+                      if isinstance(r.get("index"), int) and 1 <= r.get("index") <= len(batch)}
+
+        for seq, item in enumerate(batch, 1):
+            r = result_map.get(seq)
+            if r is None:
+                continue
+            v = r.get("verifiable", "")
+            if v in ("yes", "no"):
+                item["可核实性"] = "可核实" if v == "yes" else "不可核实"
+
+        done += len(batch)
+
+    if verbose:
+        v_count  = sum(1 for it in targets if it.get("可核实性") == "可核实")
+        nv_count = sum(1 for it in targets if it.get("可核实性") == "不可核实")
+        print(f"  [可核实性分类] 完成：可核实 {v_count} 条 / 不可核实 {nv_count} 条")
+
+
 # ── 烟雾测试 ──────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys

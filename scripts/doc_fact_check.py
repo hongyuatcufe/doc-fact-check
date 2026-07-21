@@ -1181,20 +1181,21 @@ def print_summary(statements, stage="第一轮自动核对"):
 def cmd_full_check():
     """运行完整的第一轮自动核对流程"""
     if len(sys.argv) < 3:
-        print("用法: python3 doc_fact_check.py <目标文档.docx> <参考文档目录> [输出报告.md] [--excel] [--llm-judge]")
+        print("用法: python3 doc_fact_check.py <目标文档.docx> <参考文档目录> [输出报告.md] [--excel] [--classify] [--llm-judge]")
         sys.exit(1)
 
     args  = [a for a in sys.argv[1:] if not a.startswith("--")]
     flags = [a for a in sys.argv[1:] if a.startswith("--")]
-    llm_judge  = "--llm-judge" in flags
-    want_excel = "--excel" in flags
+    llm_judge    = "--llm-judge" in flags
+    llm_classify = "--classify" in flags or llm_judge   # --llm-judge 自动包含分类
+    want_excel   = "--excel" in flags
 
     main_docx  = args[0] if len(args) > 0 else ""
     ref_dir    = args[1] if len(args) > 1 else ""
     output_md  = args[2] if len(args) > 2 else ""   # 默认下面计算
 
     if not main_docx or not ref_dir:
-        print("用法: python3 doc_fact_check.py <目标文档.docx> <参考文档目录> [输出报告.md] [--excel] [--llm-judge]")
+        print("用法: python3 doc_fact_check.py <目标文档.docx> <参考文档目录> [输出报告.md] [--excel] [--classify] [--llm-judge]")
         sys.exit(1)
 
     txt_dir = os.path.join(os.path.dirname(main_docx) or ".", "txt_output")
@@ -1279,18 +1280,27 @@ def cmd_full_check():
         print("  未发现文档内矛盾")
     print()
 
-    # Step 3.8: LLM 判定（--llm-judge 开关）
+    # Step 3.8: LLM 判定 / 可核实性分类（可选）
     if llm_judge:
         print("\n" + "=" * 60)
-        print("Step 3.8: LLM 判定层（--llm-judge）")
+        print("Step 3.8: LLM 判定层（--llm-judge）— 含可核实性分类")
         print("=" * 60)
         try:
             import adjudicate as _adj
             _adj.adjudicate_batch(statements, verbose=True)
         except ImportError:
             print("  ⚠ adjudicate.py 未找到，跳过 LLM 判定")
+    elif llm_classify:
+        print("\n" + "=" * 60)
+        print("Step 3.8: 可核实性快速分类（--classify）")
+        print("=" * 60)
+        try:
+            import adjudicate as _adj
+            _adj.classify_verifiability(statements, verbose=True)
+        except ImportError:
+            print("  ⚠ adjudicate.py 未找到，跳过可核实性分类")
     else:
-        print("  （LLM 判定已跳过，使用 --llm-judge 开启）")
+        print("  （LLM 通道已跳过：--classify 做快速可核实性分类，--llm-judge 做完整判定）")
 
     # Step 4: 保存中间结果
     print("\n" + "=" * 60)

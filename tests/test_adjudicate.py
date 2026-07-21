@@ -577,6 +577,125 @@ class TestAdjudicateBatch:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# classify_verifiability — 快速可核实性分类
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestClassifyVerifiability:
+    def setup_method(self):
+        self._orig_key  = os.environ.pop("FACTCHECK_LLM_API_KEY", None)
+        self._orig_deep = os.environ.pop("DEEPSEEK_API_KEY", None)
+
+    def teardown_method(self):
+        if self._orig_key  is not None: os.environ["FACTCHECK_LLM_API_KEY"] = self._orig_key
+        if self._orig_deep is not None: os.environ["DEEPSEEK_API_KEY"]       = self._orig_deep
+
+    def _x_item(self, text="未找到声明", has_label=False):
+        item = {
+            "表述内容": text, "命中数字": [], "命中实体": [],
+            "状态": "✗ 未找到", "反向验证警告": "",
+        }
+        if has_label:
+            item["可核实性"] = "可核实"
+        return item
+
+    def test_no_api_key_skips_silently(self, capsys):
+        items = [self._x_item()]
+        A.classify_verifiability(items, verbose=True)
+        out = capsys.readouterr().out
+        assert "跳过" in out or "无 API key" in out
+
+    def test_no_api_key_preserves_item(self):
+        item = self._x_item()
+        A.classify_verifiability([item], verbose=False)
+        assert "可核实性" not in item
+
+    def test_already_labeled_items_skipped(self, capsys):
+        item = self._x_item(has_label=True)
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_classify_batch") as mock_call:
+                A.classify_verifiability([item], verbose=True)
+        mock_call.assert_not_called()
+        out = capsys.readouterr().out
+        assert "无待分类条目" in out
+
+    def test_non_x_items_skipped(self):
+        confirmed = {
+            "表述内容": "确认声明", "状态": "✓ 已确认", "反向验证警告": "",
+        }
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_classify_batch") as mock_call:
+                A.classify_verifiability([confirmed], verbose=False)
+        mock_call.assert_not_called()
+
+    def test_verifiable_yes_sets_label(self):
+        item = self._x_item("学校获批科研项目356项")
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_classify_batch", return_value=[
+                {"index": 1, "verifiable": "yes"}
+            ]):
+                A.classify_verifiability([item], verbose=False)
+        assert item["可核实性"] == "可核实"
+
+    def test_verifiable_no_sets_label(self):
+        item = self._x_item("没有党就没有新中国")
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_classify_batch", return_value=[
+                {"index": 1, "verifiable": "no"}
+            ]):
+                A.classify_verifiability([item], verbose=False)
+        assert item["可核实性"] == "不可核实"
+
+    def test_status_not_changed(self):
+        item = self._x_item()
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_classify_batch", return_value=[
+                {"index": 1, "verifiable": "yes"}
+            ]):
+                A.classify_verifiability([item], verbose=False)
+        assert item["状态"] == "✗ 未找到"
+
+    def test_api_failure_leaves_item_unchanged(self):
+        item = self._x_item()
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_classify_batch", return_value=None):
+                A.classify_verifiability([item], verbose=False)
+        assert "可核实性" not in item
+
+    def test_missing_index_in_result_leaves_item_unchanged(self):
+        item = self._x_item()
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_classify_batch", return_value=[]):
+                A.classify_verifiability([item], verbose=False)
+        assert "可核实性" not in item
+
+    def test_batch_size_controls_api_calls(self):
+        items = [self._x_item(f"声明{i}") for i in range(5)]
+        call_count = []
+        def fake_call(msg, n, timeout=60):
+            call_count.append(1)
+            return [{"index": j + 1, "verifiable": "yes"} for j in range(n)]
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_classify_batch", side_effect=fake_call):
+                A.classify_verifiability(items, batch_size=3, verbose=False)
+        assert len(call_count) == 2  # ceil(5/3) = 2 次 API 调用
+
+    def test_empty_list_does_not_raise(self):
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            A.classify_verifiability([], verbose=False)
+
+    def test_verbose_prints_summary(self, capsys):
+        items = [self._x_item("项目356项"), self._x_item("修辞句")]
+        with patch("adjudicate._llm_config", return_value=("key", "url", "model")):
+            with patch("adjudicate._call_classify_batch", return_value=[
+                {"index": 1, "verifiable": "yes"},
+                {"index": 2, "verifiable": "no"},
+            ]):
+                A.classify_verifiability(items, verbose=True)
+        out = capsys.readouterr().out
+        assert "可核实" in out and "不可核实" in out
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # search_in_reference: 候选证据对「✗ 未找到」条目也应存储
 # ──────────────────────────────────────────────────────────────────────────────
 
